@@ -1,0 +1,8 @@
+[package]
+name = "storage_circuit"
+type = "bin"
+authors = [""]
+
+[dependencies]
+common = { path = "../common" }
+keccak256 = { tag = "v0.1.2", git = "https://github.com/noir-lang/keccak256" }

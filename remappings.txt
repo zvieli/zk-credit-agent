@@ -1,0 +1,3 @@
+forge-std/=lib/forge-std/src/
+solady/=lib/solady/src/
+@axiom-crypto/v2-periphery/=lib/axiom-crypto/v2-periphery/

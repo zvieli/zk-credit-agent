@@ -1,0 +1,132 @@
+{
+  "name": "zk-credit-agent",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+
+
+
+"clean:artifacts": "rm -rf packages/circuit/account/target packages/circuit/storage/target packages/contracts/src/account_verifier.sol packages/contracts/src/storage_verifier.sol packages/frontend/public/account_circuit.json packages/frontend/public/storage_circuit.json packages/frontend/public/deployment.json packages/contracts/out packages/contracts/cache",
+
+
+
+"circuit:toml": "cd packages/backend && npx ts-node --esm src/generate_prover.ts $ADDR",
+
+
+
+"circuits:info":"cd packages/circuit/account && nargo info && cd ../storage && nargo info",
+
+
+
+"circuit:account:compile": "cd packages/circuit/account && nargo compile",
+
+
+
+"circuit:storage:compile": "cd packages/circuit/storage && nargo compile",
+
+
+
+"circuit:account:witness": "cd packages/circuit/account && nargo execute witness",
+
+
+
+"circuit:storage:witness": "cd packages/circuit/storage && nargo execute witness",
+
+
+
+"circuit:account:prove": "cd packages/circuit/account && export RAYON_NUM_THREADS=1 && export OMP_NUM_THREADS=1 && bb prove --slow_low_memory -b ./target/account_circuit.json -w ./target/witness.gz -t evm -k ./target/proof/vk -o ./target/proof",
+
+
+
+"circuit:storage:prove": "cd packages/circuit/storage && export RAYON_NUM_THREADS=1 && export OMP_NUM_THREADS=1 && bb prove --slow_low_memory -b ./target/storage_circuit.json -w ./target/witness.gz -t evm -k ./target/proof/vk -o ./target/proof",
+
+
+
+"circuit:account:vk": "cd packages/circuit/account && npx @aztec/bb.js@4.1.3 write_vk -t evm -b ./target/account_circuit.json -o ./target/vk",
+
+
+
+
+
+"circuit:storage:vk": "cd packages/circuit/storage && npx @aztec/bb.js@4.1.3 write_vk -t evm -b ./target/storage_circuit.json -o ./target/vk_storage",
+
+"circuit:account:verifier": "cd packages/circuit/account && npx @aztec/bb.js@4.1.3 write_solidity_verifier -k ./target/vk/vk -o ../../contracts/src/account_verifier.sol && sed -i 's/assembly {/assembly (\"memory-safe\") {/g' ../../contracts/src/account_verifier.sol",
+
+"circuit:storage:verifier": "cd packages/circuit/storage && npx @aztec/bb.js@4.1.3 write_solidity_verifier -k ./target/vk_storage/vk -o ../../contracts/src/storage_verifier.sol && sed -i 's/assembly {/assembly (\"memory-safe\") {/g' ../../contracts/src/storage_verifier.sol",
+
+
+"front": "npm --prefix packages/frontend run dev",
+
+
+
+"contracts:build": "cd packages/contracts && forge build -q",
+
+
+
+"contracts:test": "cd packages/contracts && forge test",
+
+
+
+"node:fork": "anvil --fork-url https://eth-mainnet.g.alchemy.com/v2/q8TNbtfn1iWfAXRmcdoWp --code-size-limit 200000",
+
+
+
+"contracts:deploy": "cd packages/backend && npx ts-node --esm src/fund_agent.ts && npm run deploy",
+
+
+
+"frontend:build": "npm --prefix packages/frontend run build",
+
+
+
+"frontend:preview": "npm --prefix packages/frontend run preview",
+
+
+
+"frontend:sync": "npm --prefix packages/frontend run sync:circuits",
+
+
+
+"agent:fund": "cd packages/backend && npx ts-node --esm src/fund_agent.ts",
+
+
+
+"agent:test": "cd packages/backend && npx ts-node --esm src/test_flow.ts",
+
+
+
+"seed:anvil": "cd packages/backend && npx ts-node --esm src/seed_anvil.ts",
+
+
+
+"full:circuit": "npm run circuit:account:compile && npm run circuit:storage:compile && npm run circuit:toml && npm run circuit:account:witness && npm run circuit:storage:witness && npm run circuit:account:vk && npm run circuit:storage:vk && npm run circuit:account:prove && npm run circuit:storage:prove",
+
+
+
+"full:deploy-verifier": "npm run circuit:account:vk && npm run circuit:storage:vk && npm run circuit:account:verifier && npm run circuit:storage:verifier && npm run contracts:build",
+
+
+
+"full:test": "npm run agent:fund && npm run agent:test",
+
+
+
+"full:pipeline": "npm run clean:artifacts && npm run circuit:account:compile && npm run circuit:storage:compile && npm run circuit:account:vk && npm run circuit:storage:vk && npm run circuit:account:verifier && npm run circuit:storage:verifier && npm run contracts:build && npm run frontend:sync && npm run contracts:deploy && npm run front",
+
+
+
+"api":"cd packages/backend && npm run api"
+
+
+
+},
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.2"
+  }
+}
