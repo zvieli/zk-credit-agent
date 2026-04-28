@@ -22,6 +22,9 @@ const circuitCache = new Map<'storage', Promise<CompiledCircuit>>();
 const engineCache = new Map<'storage', Promise<{ noir: Noir; backend: UltraHonkBackend }>>();
 let barretenbergPromise: Promise<Barretenberg> | undefined;
 
+const STATIC_PATH_NODE_LIMIT = 9;
+const STATIC_PATH_NODE_BYTES = 600;
+
 function loadDeploymentDefaults() {
   const raw = readFileSync(path.resolve(FRONTEND_PUBLIC, 'deployment.json'), 'utf8');
   return JSON.parse(raw) as {
@@ -52,6 +55,34 @@ function bitAtWord(word: Uint8Array, bitIndex: number) {
 
 function wordToBigInt(word: Uint8Array) {
   return BigInt(`0x${Buffer.from(word).toString('hex')}`);
+}
+
+function toFieldBuffer(value: bigint) {
+  const buffer = Buffer.alloc(32);
+  let remaining = value;
+
+  for (let index = 31; index >= 0; index--) {
+    buffer[index] = Number(remaining & 0xffn);
+    remaining >>= 8n;
+  }
+
+  return buffer;
+}
+
+async function computePublicCommitment(storageRoot: Hex, key: Uint8Array, isSolvent: boolean, creditScore: number): Promise<Hex> {
+  const bbModule = await import('@aztec/bb.js');
+  const syncApi = await (bbModule as any).BarretenbergSync.initSingleton();
+  const response = await syncApi.pedersenHash({
+    inputs: [
+      Buffer.from(hexToBytes(storageRoot)),
+      Buffer.from(key),
+      toFieldBuffer(isSolvent ? 1n : 0n),
+      toFieldBuffer(BigInt(creditScore)),
+    ],
+    hashIndex: 0,
+  });
+
+  return bytesToHex(response.hash as Uint8Array) as Hex;
 }
 
 function computeSolventFromWord(word: Uint8Array) {
@@ -212,15 +243,24 @@ function makeLeafNode(word: Uint8Array, declaredValueLength = word.length) {
   const pathItem = encodeRlpBytes(pathPayload);
   const valueItem = encodeRlpBytes(word, declaredValueLength);
   const nodeBytes = encodeRlpList([pathItem, valueItem]);
+  const listHeaderLength = nodeBytes.length - pathItem.length - valueItem.length;
+  const pathOffset = listHeaderLength + (pathItem.length - pathPayload.length);
+  const pathLen = pathPayload.length;
+  const valueOffset = listHeaderLength + pathItem.length + (valueItem.length - declaredValueLength);
+  const valueLen = declaredValueLength;
 
   return {
     key,
     node: Uint8Array.from(nodeBytes),
+    pathOffset,
+    pathLen,
+    valueOffset,
+    valueLen,
   };
 }
 
 function toPackedNode(node: Uint8Array) {
-  const packed = new Array<number>(512).fill(0);
+  const packed = new Array<number>(STATIC_PATH_NODE_BYTES).fill(0);
   for (let index = 0; index < node.length; index++) {
     packed[index] = node[index]!;
   }
@@ -228,9 +268,9 @@ function toPackedNode(node: Uint8Array) {
   return packed;
 }
 
-function buildStorageInputs(word: Uint8Array, options?: { declaredValueLength?: number; isSolvent?: boolean; repaymentRate?: number; creditScore?: number; mutatePrefix?: number; }): Record<string, unknown> {
+async function buildStorageInputs(word: Uint8Array, options?: { declaredValueLength?: number; isSolvent?: boolean; repaymentRate?: number; creditScore?: number; mutatePrefix?: number; }): Promise<Record<string, unknown>> {
   const declaredValueLength = options?.declaredValueLength ?? word.length;
-  const { key, node } = makeLeafNode(word, declaredValueLength);
+  const { key, node, pathOffset, pathLen, valueOffset, valueLen } = makeLeafNode(word, declaredValueLength);
   const mutatedNode = new Uint8Array(node);
 
   if (options?.mutatePrefix !== undefined) {
@@ -240,20 +280,52 @@ function buildStorageInputs(word: Uint8Array, options?: { declaredValueLength?: 
   const root = keccak256(mutatedNode) as Hex;
 
   const packedNodes = [toPackedNode(mutatedNode)];
-  while (packedNodes.length < 10) {
-    packedNodes.push(new Array<number>(512).fill(0));
+  while (packedNodes.length < STATIC_PATH_NODE_LIMIT) {
+    packedNodes.push(new Array<number>(STATIC_PATH_NODE_BYTES).fill(0));
   }
 
   const lengths = [mutatedNode.length];
-  while (lengths.length < 10) {
+  while (lengths.length < STATIC_PATH_NODE_LIMIT) {
     lengths.push(0);
+  }
+
+  const nodeTypes = [1];
+  while (nodeTypes.length < STATIC_PATH_NODE_LIMIT) {
+    nodeTypes.push(0);
+  }
+
+  const pathOffsets = [pathOffset];
+  while (pathOffsets.length < STATIC_PATH_NODE_LIMIT) {
+    pathOffsets.push(0);
+  }
+
+  const pathLens = [pathLen];
+  while (pathLens.length < STATIC_PATH_NODE_LIMIT) {
+    pathLens.push(0);
+  }
+
+  const valueOffsets = [valueOffset];
+  while (valueOffsets.length < STATIC_PATH_NODE_LIMIT) {
+    valueOffsets.push(0);
+  }
+
+  const valueLens = [valueLen];
+  while (valueLens.length < STATIC_PATH_NODE_LIMIT) {
+    valueLens.push(0);
+  }
+
+  const branchIndices = [0];
+  while (branchIndices.length < STATIC_PATH_NODE_LIMIT) {
+    branchIndices.push(0);
   }
 
   const solvency = options?.isSolvent ?? computeSolventFromWord(word);
   const repaymentRate = options?.repaymentRate ?? 0;
   const creditScore = options?.creditScore ?? 0;
+  const publicCommitment = await computePublicCommitment(root, key, solvency, creditScore);
 
   return {
+    public_commitment: publicCommitment,
     repayment_rate: repaymentRate,
     storage_root: Array.from(hexToBytes(root)),
     nodes: packedNodes,
@@ -262,6 +334,12 @@ function buildStorageInputs(word: Uint8Array, options?: { declaredValueLength?: 
     key: Array.from(key),
     is_solvent: solvency,
     credit_score: creditScore,
+    node_types: nodeTypes,
+    path_offsets: pathOffsets,
+    path_lens: pathLens,
+    value_offsets: valueOffsets,
+    value_lens: valueLens,
+    branch_indices: branchIndices,
   };
 }
 
@@ -327,39 +405,39 @@ async function runCircuitCases() {
   console.log('Running circuit-level synthetic storage cases...');
 
   const emptyWord = new Uint8Array(32);
-  await expectProofOutcome('empty account', buildStorageInputs(emptyWord, { isSolvent: false }), true);
+  await expectProofOutcome('empty account', await buildStorageInputs(emptyWord, { isSolvent: false }), true);
 
   const debtOnlyWord = Uint8Array.from(new Array(32).fill(0x55));
-  await expectProofOutcome('debt-only trap', buildStorageInputs(debtOnlyWord, { isSolvent: false }), true);
+  await expectProofOutcome('debt-only trap', await buildStorageInputs(debtOnlyWord, { isSolvent: false }), true);
 
   const collateralOnlyWord = Uint8Array.from(new Array(32).fill(0xaa));
-  await expectProofOutcome('collateral-only account', buildStorageInputs(collateralOnlyWord, { isSolvent: true }), true);
+  await expectProofOutcome('collateral-only account', await buildStorageInputs(collateralOnlyWord, { isSolvent: true }), true);
 
   const randomWord = randomBytes(32);
   const expected = computeSolventFromWord(randomWord);
-  const goodInputs = buildStorageInputs(randomWord, { isSolvent: expected });
+  const goodInputs = await buildStorageInputs(randomWord, { isSolvent: expected });
   await expectProofOutcome('random good proof', goodInputs, true);
 
-  const flippedInputs = buildStorageInputs(randomWord, { isSolvent: !expected });
+  const flippedInputs = await buildStorageInputs(randomWord, { isSolvent: !expected });
   await expectProofOutcome('flipped solvency bit', flippedInputs, false);
 
-  const malformedPrefixInputs = buildStorageInputs(randomWord, { mutatePrefix: 0xc0, isSolvent: expected });
+  const malformedPrefixInputs = await buildStorageInputs(randomWord, { mutatePrefix: 0xc0, isSolvent: expected });
   await expectProofOutcome('invalid prefix', malformedPrefixInputs, false);
 
-  const fiftyFiveByteInputs = buildStorageInputs(randomBytes(55), { declaredValueLength: 55, isSolvent: false });
+  const fiftyFiveByteInputs = await buildStorageInputs(randomBytes(55), { declaredValueLength: 55, isSolvent: false });
   await expectProofOutcome('55-byte RLP boundary', fiftyFiveByteInputs, false);
 
-  const fiftySixByteInputs = buildStorageInputs(randomBytes(56), { declaredValueLength: 56, isSolvent: false });
+  const fiftySixByteInputs = await buildStorageInputs(randomBytes(56), { declaredValueLength: 56, isSolvent: false });
   await expectProofOutcome('56-byte RLP boundary', fiftySixByteInputs, false);
 
-  const overlongLengthInputs = buildStorageInputs(randomWord, { declaredValueLength: 500, isSolvent: expected });
+  const overlongLengthInputs = await buildStorageInputs(randomWord, { declaredValueLength: 500, isSolvent: expected });
   await expectProofOutcome('overlong RLP length', overlongLengthInputs, false);
 
   const deepPathInputs = {
     ...goodInputs,
     steps: 11,
     lens: [...(goodInputs.lens as number[]), 0],
-    nodes: [...(goodInputs.nodes as number[][]), new Array<number>(512).fill(0)],
+    nodes: [...(goodInputs.nodes as number[][]), new Array<number>(STATIC_PATH_NODE_BYTES).fill(0)],
   };
   await expectProofOutcome('deep path overflow', deepPathInputs, false);
 

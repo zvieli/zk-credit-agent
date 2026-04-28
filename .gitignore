@@ -14,3 +14,4 @@ packages/frontend/package-lock.json
 packages/frontend/dist
 .github
 .vscode
+packages/frontend/.chromium-libs

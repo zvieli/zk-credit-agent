@@ -47,8 +47,7 @@ async function main() {
     rpcUrl,
   });
 
-  const accountProof = await generateProof('account', inputs.account);
-  const storageProof = await generateProof('storage', inputs.storage);
+  const combinedProof = await generateProof('combined', inputs);
 
   const summary = {
     borrowerAddress,
@@ -56,10 +55,8 @@ async function main() {
     blockNumber: inputs.metadata.blockNumber.toString(),
     score: inputs.metadata.score,
     isSolvent: inputs.metadata.isSolvent,
-    accountPublicInputs: accountProof.publicInputs.length,
-    storagePublicInputs: storageProof.publicInputs.length,
-    accountProof: accountProof.proof,
-    storageProof: storageProof.proof,
+    combinedPublicInputs: combinedProof.publicInputs.length,
+    combinedProof: combinedProof.proof,
   };
 
   console.log(JSON.stringify(summary, null, 2));

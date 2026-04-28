@@ -193,6 +193,68 @@ h1 {
   padding: 18px;
 }
 
+.flow-tracker {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.flow-step {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(57, 46, 31, 0.12);
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.flow-step strong {
+  font-size: 0.92rem;
+}
+
+.flow-step small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.flow-step-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: rgba(187, 90, 50, 0.12);
+  color: var(--accent);
+}
+
+.flow-step.complete {
+  border-color: rgba(31, 122, 74, 0.24);
+  background: rgba(31, 122, 74, 0.08);
+}
+
+.flow-step.complete .flow-step-index {
+  background: rgba(31, 122, 74, 0.14);
+  color: var(--success);
+}
+
+.flow-step.active {
+  border-color: rgba(15, 111, 115, 0.28);
+  background: rgba(15, 111, 115, 0.08);
+}
+
+.flow-step.active .flow-step-index {
+  background: rgba(15, 111, 115, 0.14);
+  color: var(--accent-2);
+}
+
+.flow-step.pending {
+  opacity: 0.8;
+}
+
 .card-header h2,
 .step h3 {
   margin: 0;
@@ -317,6 +379,10 @@ label {
 
   .hero {
     flex-direction: column;
+  }
+
+  .flow-tracker {
+    grid-template-columns: 1fr;
   }
 
   .step-header,

@@ -3,7 +3,8 @@ import { mainnet } from 'viem/chains';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { buildSendQuery, getAxiomV2QueryAddress } from '@axiom-crypto/client';
+
+export { buildAndSendAxiomStateRootQuery, encodeAxiomStateRootCallbackData } from './axiom_service.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,9 +13,11 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 export const AAVE_V3_POOL_ADDRESS = getAddress(process.env.AAVE_V3_POOL_ADDRESS || '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2');
 export const AAVE_USER_CONFIG_SLOT = 53n;
+const ZERO_BYTES32 = `0x${'0'.repeat(64)}` as const;
 
 export function getAaveUserConfigStorageSlot(userAddress: string) {
-  return keccak256(encodeAbiParameters(parseAbiParameters('address, uint256'), [getAddress(userAddress), AAVE_USER_CONFIG_SLOT]));
+  const normalizedUserAddress = getAddress(userAddress);
+  return keccak256(encodeAbiParameters(parseAbiParameters('address, uint256'), [normalizedUserAddress, AAVE_USER_CONFIG_SLOT]));
 }
 
 export function evaluateAaveUserConfig(userConfig: bigint) {
@@ -45,9 +48,45 @@ export function evaluateAaveUserConfig(userConfig: bigint) {
   };
 }
 
+function isEmptyStateRoot(stateRoot?: string | null) {
+  return !stateRoot || stateRoot.toLowerCase() === ZERO_BYTES32;
+}
+
+function resolveBlockStateRoot(block: unknown): `0x${string}` | undefined {
+  if (!block || typeof block !== 'object') {
+    return undefined;
+  }
+
+  const blockRecord = block as {
+    stateRoot?: unknown;
+    state_root?: unknown;
+    stateRootHash?: unknown;
+    state_root_hash?: unknown;
+  };
+
+  const candidateRoots = [
+    blockRecord.stateRoot,
+    blockRecord.state_root,
+    blockRecord.stateRootHash,
+    blockRecord.state_root_hash,
+  ];
+
+  for (const candidate of candidateRoots) {
+    if (typeof candidate === 'string' && candidate.startsWith('0x')) {
+      return candidate as `0x${string}`;
+    }
+  }
+
+  return undefined;
+}
+
 function resolveProofRpcUrl(explicitRpcUrl?: string) {
   if (explicitRpcUrl) {
     return explicitRpcUrl;
+  }
+
+  if (process.env.ANVIL_RPC_URL) {
+    return process.env.ANVIL_RPC_URL;
   }
 
   if (process.env.PROOF_RPC_URL) {
@@ -63,6 +102,15 @@ function resolveProofRpcUrl(explicitRpcUrl?: string) {
   }
 
   return 'http://127.0.0.1:8545';
+}
+
+function createProofPublicClient(rpcUrl?: string) {
+  return createPublicClient({
+    chain: mainnet,
+    transport: http(resolveProofRpcUrl(rpcUrl), {
+      timeout: 30000,
+    }),
+  });
 }
 
 const poolAbi = [
@@ -89,58 +137,6 @@ const poolAbi = [
   }
 ] as const;
 
-function createProofPublicClient(rpcUrl?: string) {
-  return createPublicClient({
-    chain: mainnet,
-    transport: http(resolveProofRpcUrl(rpcUrl), {
-      timeout: 300000,
-    }),
-  });
-}
-
-export function encodeAxiomStateRootCallbackData(blockNumber: bigint) {
-  return encodeAbiParameters(parseAbiParameters('uint256'), [blockNumber]);
-}
-
-export async function buildAndSendAxiomStateRootQuery(input: {
-  chainId: number;
-  rpcUrl: string;
-  caller: string;
-  callbackTarget: string;
-  blockNumber: bigint;
-  dataQuery: any[];
-  computeQuery: any;
-  options?: any;
-  target?: { chainId: number; rpcUrl: string };
-  axiomV2QueryAddress?: string;
-  mock?: boolean;
-  sendQuery?: (payload: any) => Promise<unknown>;
-}) {
-  const axiomV2QueryAddress = input.axiomV2QueryAddress ?? getAxiomV2QueryAddress(String(input.chainId));
-  const sendQueryArgs = await buildSendQuery({
-    chainId: String(input.chainId),
-    rpcUrl: input.rpcUrl,
-    axiomV2QueryAddress,
-    dataQuery: input.dataQuery,
-    computeQuery: input.computeQuery,
-    callback: {
-      target: getAddress(input.callbackTarget),
-      extraData: encodeAxiomStateRootCallbackData(input.blockNumber),
-    },
-    caller: getAddress(input.caller),
-    mock: input.mock ?? true,
-    options: input.options ?? {},
-    target: input.target,
-  } as any);
-
-  if (input.sendQuery) {
-    const txHash = await input.sendQuery(sendQueryArgs);
-    return { ...sendQueryArgs, txHash };
-  }
-
-  return sendQueryArgs;
-}
-
 export async function getUserFeaturesAndSignature(
   userAddress: string,
   contractAddress: string,
@@ -157,25 +153,31 @@ export async function getUserFeaturesAndSignature(
   const publicClient = createProofPublicClient(rpcUrl);
   const validatedAddress = getAddress(userAddress);
   const validatedContract = getAddress(contractAddress);
-  
+
+  console.log('[rpc] getUserAccountData:start', { userAddress: validatedAddress, contractAddress: validatedContract });
   const data = await publicClient.readContract({
     address: AAVE_V3_POOL_ADDRESS,
     abi: poolAbi,
     functionName: 'getUserAccountData',
     args: [validatedAddress],
   });
+  console.log('[rpc] getUserAccountData:done', { userAddress: validatedAddress });
 
+  console.log('[rpc] getUserConfiguration:start', { userAddress: validatedAddress, contractAddress: validatedContract });
   const userConfigResult = await publicClient.readContract({
     address: AAVE_V3_POOL_ADDRESS,
     abi: poolAbi,
     functionName: 'getUserConfiguration',
     args: [validatedAddress],
   }) as { data?: bigint } | bigint;
+  console.log('[rpc] getUserConfiguration:done', { userAddress: validatedAddress });
 
   const userConfig = typeof userConfigResult === 'bigint' ? userConfigResult : userConfigResult.data ?? 0n;
   const userConfigState = evaluateAaveUserConfig(userConfig);
 
+  console.log('[rpc] getBalance:start', { userAddress: validatedAddress });
   const ethBalance = await publicClient.getBalance({ address: validatedAddress });
+  console.log('[rpc] getBalance:done', { userAddress: validatedAddress });
 
   const normalizeUSD = (val: bigint) => Number(val / 100000000n) || 0;
   const normalizeHF = (val: bigint) => Number(val / 1000000000000000000n) || 0;
@@ -188,30 +190,90 @@ const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
   const USDT = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
   const erc20Abi = [{"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"balanceOf","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"}] as const;
 
+  console.log('[rpc] getUSDCBalance:start', { userAddress: validatedAddress });
   const usdcBal = await publicClient.readContract({ address: USDC, abi: erc20Abi, functionName: 'balanceOf', args: [validatedAddress] });
-  const usdtBal = await publicClient.readContract({ address: USDT, abi: erc20Abi, functionName: 'balanceOf', args: [validatedAddress] });
+  console.log('[rpc] getUSDCBalance:done', { userAddress: validatedAddress });
 
-  const latestBlock = overrides?.blockNumber
-    ? await publicClient.getBlock({ blockNumber: overrides.blockNumber })
-    : await publicClient.getBlock({ blockTag: 'latest' });
-  const requestedBlockNumber = overrides?.blockNumber ?? latestBlock.number;
-  const proofBlockNumber = requestedBlockNumber > 0n ? requestedBlockNumber - 1n : requestedBlockNumber;
-  const proofBlock = await publicClient.getBlock({ blockNumber: proofBlockNumber });
-  const blockNumber = proofBlock.number;
-  const stateRoot = overrides?.stateRoot ?? proofBlock.stateRoot;
+  console.log('[rpc] getUSDTBalance:start', { userAddress: validatedAddress });
+  const usdtBal = await publicClient.readContract({ address: USDT, abi: erc20Abi, functionName: 'balanceOf', args: [validatedAddress] });
+  console.log('[rpc] getUSDTBalance:done', { userAddress: validatedAddress });
+
+  const requestedBlockNumber = overrides?.blockNumber;
+  console.log('[rpc] getBlock:start', {
+    userAddress: validatedAddress,
+    requestedBlockNumber: requestedBlockNumber?.toString(),
+  });
+  let cursorBlockNumber = requestedBlockNumber;
+  let proofBlock: Awaited<ReturnType<typeof publicClient.getBlock>> | undefined;
+  let stateRoot: `0x${string}` | undefined;
+  const maxRetries = 2;
+
+  for (let retry = 0; retry <= maxRetries; retry++) {
+    const currentBlock = cursorBlockNumber !== undefined
+      ? await publicClient.getBlock({ blockNumber: cursorBlockNumber })
+      : await publicClient.getBlock({ blockTag: 'latest' });
+
+    const rawBlock = await publicClient.request({
+      method: 'eth_getBlockByNumber',
+      params: [`0x${currentBlock.number.toString(16)}`, false],
+    }) as Record<string, unknown> | null;
+
+    const resolvedStateRoot = overrides?.stateRoot ?? resolveBlockStateRoot(rawBlock) ?? resolveBlockStateRoot(currentBlock);
+
+    console.log('[rpc] getBlock:done', { blockNumber: currentBlock.number, stateRoot: resolvedStateRoot });
+
+    if (!isEmptyStateRoot(resolvedStateRoot)) {
+      proofBlock = currentBlock;
+      stateRoot = resolvedStateRoot;
+      break;
+    }
+
+    console.log('[rpc] getBlock:missing-stateRoot-keys', {
+      blockNumber: currentBlock.number,
+      blockKeys: Object.keys(currentBlock as Record<string, unknown>),
+      rawBlockKeys: rawBlock && typeof rawBlock === 'object' ? Object.keys(rawBlock) : [],
+    });
+
+    if (retry === maxRetries) {
+      throw new Error('Fetched block has an empty state root. The fork might be out of sync.');
+    }
+
+    const nextBlockNumber = currentBlock.number > 200n ? currentBlock.number - 200n : 0n;
+    console.log(`[rpc] Block ${currentBlock.number.toString()} is unstable. Jumping back 200 blocks to find finalized state...`);
+    cursorBlockNumber = nextBlockNumber;
+  }
+
+  if (!proofBlock || !stateRoot) {
+    throw new Error('Fetched block has an empty state root. The fork might be out of sync.');
+  }
+
+  const successfulBlockNumber = proofBlock.number;
+  if (successfulBlockNumber === null || successfulBlockNumber === undefined) {
+    throw new Error('Fetched block has an empty state root. The fork might be out of sync.');
+  }
+
+  const blockNumber = successfulBlockNumber;
+  const proofBlockNumber = blockNumber;
 
   let past_liquidations_count = 0;
   try {
-      const logs = await publicClient.getLogs({
-        address: AAVE_V3_POOL_ADDRESS,
-        event: parseAbiItem('event LiquidationCall(address indexed collateralAsset, address indexed debtAsset, address indexed user, uint256 debtToCover, uint256 liquidatedCollateralAmount, address liquidator, bool receiveAToken)'),
-        args: { user: validatedAddress },
-        fromBlock: blockNumber > 10n ? blockNumber - 10n : 0n,
-        toBlock: "latest"
-      });
-      past_liquidations_count = logs.length;
+    console.log('[rpc] getLogs:start', { userAddress: validatedAddress, blockNumber: blockNumber.toString() });
+    const logFromBlock = blockNumber > 9n ? blockNumber - 9n : 0n;
+    const logs = await publicClient.getLogs({
+      address: AAVE_V3_POOL_ADDRESS,
+      event: parseAbiItem('event LiquidationCall(address indexed collateralAsset, address indexed debtAsset, address indexed user, uint256 debtToCover, uint256 liquidatedCollateralAmount, address liquidator, bool receiveAToken)'),
+      args: { user: validatedAddress },
+      fromBlock: logFromBlock,
+      toBlock: blockNumber,
+    });
+    console.log('[rpc] getLogs:done', { userAddress: validatedAddress, count: logs.length });
+    past_liquidations_count = logs.length;
   } catch (e) {
-      console.log('Failed to fetch logs, defaulting to 0');
+    console.log('[rpc] getLogs:error', {
+      userAddress: validatedAddress,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    console.log('Failed to fetch logs, defaulting to 0');
   }
 
   const colBase = normalizeUSD(data[0]);
@@ -246,11 +308,13 @@ const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
   // Storage Proof Calculation
   const storageAddress = overrides?.storageProofAddress ? getAddress(overrides.storageProofAddress) : AAVE_V3_POOL_ADDRESS;
   const storageSlot = overrides?.storageProofSlot ?? getAaveUserConfigStorageSlot(validatedAddress);
+  console.log('[rpc] getProof:start', { userAddress: validatedAddress, storageAddress, storageSlot, blockNumber: blockNumber.toString() });
   const proof = await publicClient.getProof({
     address: storageAddress,
     storageKeys: [storageSlot],
     blockNumber: blockNumber
   });
+  console.log('[rpc] getProof:done', { userAddress: validatedAddress, storageAddress, storageSlot });
 
   const proofAny = proof as any;
   const storageHash = proof.storageHash;

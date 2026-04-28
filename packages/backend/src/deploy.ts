@@ -14,6 +14,7 @@ const FRONTEND_PUBLIC_ROOT = resolve(__dirname, '../../frontend/public');
 const DEPLOYMENT_JSON_PATH = join(FRONTEND_PUBLIC_ROOT, 'deployment.json');
 const LOCAL_DEV_FUND_WEI = '0x3635c9adc5dea00000';
 const TRANSCRIPT_LIB_ARTIFACT_CANDIDATES = [
+  join(CONTRACTS_OUT, 'combined_verifier.sol/ZKTranscriptLib.json'),
   join(CONTRACTS_OUT, 'account_verifier.sol/ZKTranscriptLib.json'),
   join(CONTRACTS_OUT, 'storage_verifier.sol/ZKTranscriptLib.json'),
 ];
@@ -55,22 +56,14 @@ async function main() {
   const libAddress = (await publicClient.waitForTransactionReceipt({ hash: libHash })).contractAddress!;
   console.log(`ZKTranscriptLib: ${libAddress}`);
 
-  const accVerifierArtifact = JSON.parse(readFileSync(join(CONTRACTS_OUT, 'account_verifier.sol/HonkVerifier.json'), 'utf-8'));
-  const storeVerifierArtifact = JSON.parse(readFileSync(join(CONTRACTS_OUT, 'storage_verifier.sol/HonkVerifier.json'), 'utf-8'));
+  const combinedVerifierArtifact = JSON.parse(readFileSync(join(CONTRACTS_OUT, 'combined_verifier.sol/HonkVerifier.json'), 'utf-8'));
 
-  console.log('Deploying AccountVerifier...');
-  const accHash = await walletClient.deployContract({
-    abi: accVerifierArtifact.abi,
-    bytecode: linkLibrary(accVerifierArtifact.bytecode.object, libAddress) as Hex,
+  console.log('Deploying CombinedVerifier...');
+  const combinedHash = await walletClient.deployContract({
+    abi: combinedVerifierArtifact.abi,
+    bytecode: linkLibrary(combinedVerifierArtifact.bytecode.object, libAddress) as Hex,
   });
-  const accVerifierAddr = (await publicClient.waitForTransactionReceipt({ hash: accHash })).contractAddress!;
-
-  console.log('Deploying StorageVerifier...');
-  const storeHash = await walletClient.deployContract({
-    abi: storeVerifierArtifact.abi,
-    bytecode: linkLibrary(storeVerifierArtifact.bytecode.object, libAddress) as Hex,
-  });
-  const storeVerifierAddr = (await publicClient.waitForTransactionReceipt({ hash: storeHash })).contractAddress!;
+  const combinedVerifierAddr = (await publicClient.waitForTransactionReceipt({ hash: combinedHash })).contractAddress!;
 
   console.log('Deploying ScoreRegistry...');
   const registryArtifact = JSON.parse(readFileSync(join(CONTRACTS_OUT, 'ScoreRegistry.sol/ScoreRegistry.json'), 'utf-8'));
@@ -79,12 +72,12 @@ async function main() {
 
   console.log('Deploying CreditPolicy...');
   const policyArtifact = JSON.parse(readFileSync(join(CONTRACTS_OUT, 'CreditPolicy.sol/CreditPolicy.json'), 'utf-8'));
-  const axiomAddress = getAddress(process.env.AXIOM_V2_QUERY_ADDRESS || '0x83c8c0B395850bA55c830451Cfaca4F2A667a983');
+  const axiomAddress = getAddress(process.env.AXIOM_V2_QUERY_ADDRESS || '0x386121D50d8591873C8b8b15d666E3A3705978f8');
 
   const policyHash = await walletClient.deployContract({
     abi: policyArtifact.abi,
     bytecode: policyArtifact.bytecode.object,
-    args: [axiomAddress, accVerifierAddr, storeVerifierAddr],
+    args: [axiomAddress, combinedVerifierAddr],
   });
   const policyAddr = (await publicClient.waitForTransactionReceipt({ hash: policyHash })).contractAddress!;
 
@@ -99,8 +92,7 @@ async function main() {
   console.log('\nDeployment Complete');
   console.log(`CREDIT_POLICY_ADDRESS=${policyAddr}`);
   console.log(`SCORE_REGISTRY_ADDRESS=${registryAddr}`);
-  console.log(`ACCOUNT_VERIFIER_ADDRESS=${accVerifierAddr}`);
-  console.log(`STORAGE_VERIFIER_ADDRESS=${storeVerifierAddr}`);
+  console.log(`COMBINED_VERIFIER_ADDRESS=${combinedVerifierAddr}`);
 
   mkdirSync(FRONTEND_PUBLIC_ROOT, { recursive: true });
   writeFileSync(
@@ -111,8 +103,7 @@ async function main() {
         rpcUrl,
         creditPolicyAddress: policyAddr,
         scoreRegistryAddress: registryAddr,
-        accountVerifierAddress: accVerifierAddr,
-        storageVerifierAddress: storeVerifierAddr,
+        combinedVerifierAddress: combinedVerifierAddr,
         axiomV2QueryAddress: axiomAddress,
       },
       null,

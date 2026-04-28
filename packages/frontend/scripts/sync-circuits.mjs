@@ -8,12 +8,8 @@ const workspaceRoot = resolve(packageRoot, '..', '..');
 
 const copies = [
   {
-    source: resolve(workspaceRoot, 'packages/circuit/account/target/account_circuit.json'),
-    destination: resolve(packageRoot, 'public/account_circuit.json'),
-  },
-  {
-    source: resolve(workspaceRoot, 'packages/circuit/storage/target/storage_circuit.json'),
-    destination: resolve(packageRoot, 'public/storage_circuit.json'),
+    source: resolve(workspaceRoot, 'packages/circuit/combined/target/combined.json'),
+    destination: resolve(packageRoot, 'public/combined_circuit.json'),
   },
 ];
 

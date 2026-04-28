@@ -3,7 +3,7 @@ import { Noir, type CompiledCircuit } from '@noir-lang/noir_js';
 import { bytesToHex, type Hex } from 'viem';
 import { ungzip } from 'pako';
 
-type ProofCircuitName = 'account' | 'storage';
+type ProofCircuitName = 'account' | 'storage' | 'combined';
 
 type GeneratedProof = {
   proof: Hex;
@@ -15,6 +15,11 @@ type WorkerRequest =
       id: string;
       type: 'ensure-engine';
       circuitName: ProofCircuitName;
+    }
+  | {
+      id: string;
+      type: 'compute-public-commitment';
+      inputs: Uint8Array[];
     }
   | {
       id: string;
@@ -41,6 +46,11 @@ type WorkerResponse =
     }
   | {
       id: string;
+      type: 'commitment';
+      commitment: Hex;
+    }
+  | {
+      id: string;
       type: 'error';
       error: string;
     };
@@ -53,12 +63,16 @@ type ProofEngine = {
 const PROOF_CIRCUIT_URLS: Record<ProofCircuitName, string> = {
   account: '/account_circuit.json',
   storage: '/storage_circuit.json',
+  combined: '/combined_circuit.json',
 };
 
 const circuitCache = new Map<ProofCircuitName, Promise<CompiledCircuit>>();
 const proofEngineCache = new Map<ProofCircuitName, Promise<ProofEngine>>();
 let barretenbergPromise: Promise<Barretenberg> | undefined;
 let loadedSrsSize = 0;
+
+const STATIC_PATH_NODE_LIMIT = 9;
+const STATIC_PATH_NODE_BYTES = 600;
 
 console.info('[proof-worker] alive');
 
@@ -161,10 +175,23 @@ async function ensureEngine(circuitName: ProofCircuitName) {
   await getProofEngine(circuitName);
 }
 
+async function computePublicCommitment(inputs: Uint8Array[]): Promise<Hex> {
+  const api = await getBarretenberg();
+  const response = await api.pedersenHash({
+    inputs,
+    hashIndex: 0,
+  });
+
+  return bytesToHex(response.hash);
+}
+
 async function generateProof(circuitName: ProofCircuitName, inputs: Record<string, unknown>): Promise<GeneratedProof> {
   const proofEngine = await getProofEngine(circuitName);
   post({ id: `${circuitName}:witness`, type: 'log', message: `[proof-worker] Starting witness generation for ${circuitName}...` });
-  const { witness } = await proofEngine.noir.execute(inputs as Record<string, unknown>);
+  const witnessInputs = inputs && typeof inputs === 'object' && 'metadata' in inputs
+    ? (({ metadata: _metadata, ...rest }) => rest)(inputs as { metadata?: unknown } & Record<string, unknown>)
+    : inputs;
+  const { witness } = await proofEngine.noir.execute(witnessInputs as Record<string, unknown>);
   post({ id: `${circuitName}:witness`, type: 'log', message: `[proof-worker] Witness generated successfully for ${circuitName}` });
   post({ id: `${circuitName}:backend`, type: 'log', message: `[proof-worker] Starting backend.generateProof for ${circuitName}...` });
   const proofData = await proofEngine.backend.generateProof(witness, {
@@ -190,6 +217,12 @@ globalThis.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     if (message.type === 'ensure-engine') {
       await ensureEngine(message.circuitName);
       post({ id: message.id, type: 'ready', circuitName: message.circuitName });
+      return;
+    }
+
+    if (message.type === 'compute-public-commitment') {
+      const commitment = await computePublicCommitment(message.inputs);
+      post({ id: message.id, type: 'commitment', commitment });
       return;
     }
 

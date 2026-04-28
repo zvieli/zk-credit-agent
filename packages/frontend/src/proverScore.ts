@@ -1,25 +1,10 @@
 import type { Hex } from 'viem';
 import * as prover from './prover';
+import type { GeneratedProof, LoanProofInputs, ProofCircuitName } from './prover';
 
-export type ScoreProofInputs = {
-  account: Record<string, unknown>;
-  storage: Record<string, unknown>;
-  metadata: {
-    nonce: number;
-    chainId: number;
-    contractAddress: Hex;
-    userAddress: Hex;
-    blockNumber: bigint;
-    userConfig: bigint;
-    stateRoot: Hex;
-    accountTrieKey: Hex;
-    storageRoot: Hex;
-    storageProofKey: Hex;
-    repaymentRate: number;
-    score: number;
-    isSolvent: boolean;
-  };
-};
+export type { GeneratedProof } from './prover';
+
+export type ScoreProofInputs = LoanProofInputs;
 
 export type ScoreProofInputsParams = {
   userAddress: string;
@@ -62,4 +47,54 @@ export const buildScoreProofInputs = (prover as Record<string, unknown>)[scorePr
   params: ScoreProofInputsParams,
 ) => Promise<ScoreProofInputs>;
 
-export { generateProof, type GeneratedProof } from './prover';
+function resolveBackendApiUrl(pathname: string) {
+  const backendUrl = import.meta.env.VITE_BACKEND_URL;
+
+  if (!backendUrl) {
+    return new URL(pathname.replace(/^\//, ''), 'http://localhost:3001/').toString();
+  }
+
+  return new URL(pathname.replace(/^\//, ''), backendUrl.endsWith('/') ? backendUrl : `${backendUrl}/`).toString();
+}
+
+async function postBackendJson<T>(pathname: string, body: unknown) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const response = await fetch(resolveBackendApiUrl(pathname), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal,
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(errorBody || `Request to ${pathname} failed with ${response.status}`);
+    }
+
+    return response.json() as Promise<T>;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Network timeout');
+    }
+
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+export async function generateProof(circuitName: ProofCircuitName, inputs: Record<string, unknown>): Promise<GeneratedProof> {
+  const witnessInputs = inputs && typeof inputs === 'object' && 'metadata' in inputs
+    ? (({ metadata: _metadata, ...rest }) => rest)(inputs as { metadata?: unknown } & Record<string, unknown>)
+    : inputs;
+
+  return postBackendJson<GeneratedProof>('/api/generate-proof', {
+    circuitName,
+    inputs: witnessInputs,
+  });
+}

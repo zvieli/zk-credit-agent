@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RainbowKitProvider, lightTheme } from '@rainbow-me/rainbowkit';
 import { WagmiProvider, createConfig, http } from 'wagmi';
 import { injected } from 'wagmi/connectors';
-import { mainnet } from 'wagmi/chains';
+import { anvil } from 'viem/chains';
 import App from './App';
 import './styles.css';
 import '@rainbow-me/rainbowkit/styles.css';
@@ -27,10 +27,10 @@ if (!window.crossOriginIsolated) {
 
 const queryClient = new QueryClient();
 const config = createConfig({
-  chains: [mainnet],
+  chains: [anvil],
   connectors: hasInjectedProvider ? [injected()] : [],
   transports: {
-    [mainnet.id]: http(import.meta.env.VITE_RPC_URL ?? 'http://127.0.0.1:8545'),
+    [anvil.id]: http(import.meta.env.VITE_RPC_URL ?? 'http://127.0.0.1:8545'),
   },
 });
 

@@ -7,7 +7,7 @@ import {
   type Hex,
 } from 'viem';
 
-export type ProofCircuitName = 'account' | 'storage';
+export type ProofCircuitName = 'account' | 'storage' | 'combined';
 
 export type GeneratedProof = {
   proof: Hex;
@@ -15,8 +15,19 @@ export type GeneratedProof = {
 };
 
 export type LoanProofInputs = {
-  account: Record<string, unknown>;
-  storage: Record<string, unknown>;
+  state_root: number[];
+  account_nodes: number[][];
+  account_lens: number[];
+  account_steps: number;
+  account_key: number[];
+  storage_nodes: number[][];
+  public_commitment: Hex;
+  storage_lens: number[];
+  storage_steps: number;
+  storage_key: number[];
+  repayment_rate: number;
+  is_solvent: boolean;
+  credit_score: number;
   metadata: {
     nonce: number;
     chainId: number;
@@ -25,6 +36,7 @@ export type LoanProofInputs = {
     blockNumber: bigint;
     userConfig: bigint;
     stateRoot: Hex;
+    publicCommitment: Hex;
     accountTrieKey: Hex;
     storageRoot: Hex;
     storageProofKey: Hex;
@@ -33,7 +45,6 @@ export type LoanProofInputs = {
     isSolvent: boolean;
   };
 };
-
 type LoanProofParams = {
   userAddress: string;
   contractAddress: string;
@@ -132,6 +143,11 @@ function getWorker() {
       return;
     }
 
+    if (message.type === 'commitment') {
+      pendingRequest.resolve(message.commitment);
+      return;
+    }
+
     pendingRequest.reject(new Error(message.error || 'Proof worker error'));
   });
 
@@ -172,13 +188,37 @@ function resolveRpcUrl(explicitRpcUrl?: string) {
 }
 
 function resolveBackendApiUrl(pathname: string) {
-  const backendUrl = import.meta.env.VITE_BACKEND_URL;
+  const backendUrl = import.meta.env.VITE_BACKEND_URL ?? (globalThis as typeof globalThis & { process?: { env?: Record<string, string | undefined> } }).process?.env?.VITE_BACKEND_URL;
 
   if (!backendUrl) {
-    return pathname;
+    return new URL(pathname.replace(/^\//, ''), 'http://localhost:3001/').toString();
   }
 
   return new URL(pathname.replace(/^\//, ''), backendUrl.endsWith('/') ? backendUrl : `${backendUrl}/`).toString();
+}
+
+function toFieldBuffer(value: bigint): Uint8Array {
+  const buffer = new Uint8Array(32);
+  let remaining = value;
+
+  for (let index = 31; index >= 0; index--) {
+    buffer[index] = Number(remaining & 0xffn);
+    remaining >>= 8n;
+  }
+
+  return buffer;
+}
+
+async function computePublicCommitment(stateRoot: Hex, isSolvent: boolean, score: number): Promise<Hex> {
+  return postProofWorkerMessage<Hex>({
+    id: crypto.randomUUID(),
+    type: 'compute-public-commitment',
+    inputs: [
+      hexToBytes(stateRoot),
+      toFieldBuffer(isSolvent ? 1n : 0n),
+      toFieldBuffer(BigInt(score)),
+    ],
+  }, 900000);
 }
 
 function flattenStorageProof(storageProof: BackendProofData['storageProof']) {
@@ -188,6 +228,10 @@ function flattenStorageProof(storageProof: BackendProofData['storageProof']) {
 
   const firstEntry = storageProof[0];
   if (typeof firstEntry === 'string') {
+    if (storageProof.length === 1 && firstEntry.toLowerCase() === '0x80') {
+      throw new Error('Data not found in this block. Ensure you are on the correct fork.');
+    }
+
     return storageProof as Hex[];
   }
 
@@ -207,6 +251,7 @@ async function postBackendJson<T>(pathname: string, body: unknown) {
     body: JSON.stringify(body),
   });
 
+
   if (!response.ok) {
     const errorBody = await response.text();
     throw new Error(errorBody || `Request to ${pathname} failed with ${response.status}`);
@@ -218,6 +263,10 @@ async function postBackendJson<T>(pathname: string, body: unknown) {
 async function ensureEngine(circuitName: ProofCircuitName): Promise<void> {
   const requestId = crypto.randomUUID();
   await postProofWorkerMessage<void>({ id: requestId, type: 'ensure-engine', circuitName }, 900000);
+}
+
+export async function warmProofEngine(circuitName: ProofCircuitName): Promise<void> {
+  await ensureEngine(circuitName);
 }
 
 function isZeroRoot(root: Hex | undefined | null) {
@@ -450,7 +499,6 @@ function describeStaticPathProof(nodesHex: readonly string[], rootHash: Hex, key
           leafValue: currentNode.slice(terminalItem.payloadOffset, terminalItem.payloadOffset + terminalItem.payloadLen),
         };
       }
-
       const branchIndex = keyNibbleAt(key, keyOffset);
       const [candidateOffset, candidateChild] = listItemAt(currentNode, decodedNode.payloadOffset, branchIndex);
 
@@ -489,7 +537,7 @@ function describeStaticPathProof(nodesHex: readonly string[], rootHash: Hex, key
       childOffsets: [],
       nodeLens: fallback.ordered.map((node) => node.length),
       nodeTypes: [],
-      trieKey: fallback.trieKey,
+      trieKey: safeTrieKeyFromNibbles([]),
       leafValue: fallback.leafValue,
     };
   }
@@ -603,11 +651,77 @@ function nodeMatchesReference(node: Uint8Array, reference: Uint8Array) {
   return keccak256(node) === bytesToHex(reference);
 }
 
+function nodeReferencesCandidate(node: Uint8Array, candidate: Uint8Array) {
+  try {
+    const decodedNode = decodeRlpItem(node, 0);
+    const [, firstItem] = listItemAt(node, decodedNode.payloadOffset, 0);
+    const [secondItemOffset, secondItem] = listItemAt(node, decodedNode.payloadOffset, 1);
+    const isCompactNode = secondItemOffset + secondItem.totalLen === decodedNode.totalLen;
+
+    if (isCompactNode) {
+      if (secondItem.payloadLen === 0) {
+        return false;
+      }
+
+      const reference = node.slice(secondItem.payloadOffset, secondItem.payloadOffset + secondItem.payloadLen);
+      return nodeMatchesReference(candidate, reference);
+    }
+
+    for (let index = 0; index < 16; index++) {
+      const [, childItem] = listItemAt(node, decodedNode.payloadOffset, index);
+
+      if (childItem.payloadLen === 0) {
+        continue;
+      }
+
+      const reference = node.slice(childItem.payloadOffset, childItem.payloadOffset + childItem.payloadLen);
+      if (nodeMatchesReference(candidate, reference)) {
+        return true;
+      }
+    }
+
+    void firstItem;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function findRootNodeIndex(nodes: Uint8Array[], rootHash: Hex) {
+  const explicitIndex = nodes.findIndex((node) => keccak256(node) === rootHash);
+
+  if (explicitIndex >= 0) {
+    return explicitIndex;
+  }
+
+  for (let candidateIndex = 0; candidateIndex < nodes.length; candidateIndex++) {
+    const candidate = nodes[candidateIndex]!;
+    let referenced = false;
+
+    for (let nodeIndex = 0; nodeIndex < nodes.length; nodeIndex++) {
+      if (nodeIndex === candidateIndex) {
+        continue;
+      }
+
+      if (nodeReferencesCandidate(nodes[nodeIndex]!, candidate)) {
+        referenced = true;
+        break;
+      }
+    }
+
+    if (!referenced) {
+      return candidateIndex;
+    }
+  }
+
+  return nodes.length > 0 ? 0 : -1;
+}
+
 function orderProofNodesKeyless(nodesHex: readonly string[], rootHash: Hex) {
   const remaining = nodesHex.map((nodeHex) => hexToBytes(nodeHex as Hex));
   const ordered: Uint8Array[] = [];
   const pathNibbles: number[] = [];
-  const rootIndex = remaining.findIndex((node) => keccak256(node) === rootHash);
+  const rootIndex = findRootNodeIndex(remaining, rootHash);
 
   if (rootIndex < 0) {
     throw new Error(`Root node not found for ${rootHash}`);
@@ -767,8 +881,9 @@ async function getUserFeaturesAndSignature(
       contractAddress: validatedContract,
       chainId,
       nonce,
+      rpcUrl: resolveRpcUrl(rpcUrl),
       overrides,
-    }),
+    }, (_key, value) => (typeof value === 'bigint' ? value.toString() : value)),
   });
 
   const rawResponse = await response.text();
@@ -834,7 +949,8 @@ export async function buildLoanProofInputs(params: LoanProofParams): Promise<Loa
   console.info('[sync] state root inferred:', inferredStateRoot);
 
   // Account proof must match the Aave pool account proven by the backend.
-  const accountTrieKeyBytes = hexToBytes(keccak256(hexToBytes(DEFAULT_AAVE_POOL_ADDRESS)));
+  const normalizedAavePoolAddress = getAddress(DEFAULT_AAVE_POOL_ADDRESS);
+  const accountTrieKeyBytes = hexToBytes(keccak256(hexToBytes(normalizedAavePoolAddress)));
   const accountTrieKeyHex = bytesToHex(accountTrieKeyBytes) as Hex;
   const accountTrieKeyNibbles = expandToNibbles(accountTrieKeyBytes);
 
@@ -845,13 +961,18 @@ export async function buildLoanProofInputs(params: LoanProofParams): Promise<Loa
     nodeLens: accountPath.nodeLens,
     nodeTypes: accountPath.nodeTypes,
   });
-  const lastAccountNode = accountPath.ordered[accountPath.ordered.length - 1]!;
-  const [, accountRecordItem] = listItemAt(lastAccountNode, rlpHeaderLength(lastAccountNode[0]!), 1);
-  const accountLeafStorageRootHex = bytesToHex(extractStorageRootFromAccountLeaf(lastAccountNode, accountRecordItem.payloadOffset)) as Hex;
-  console.info('[sync] account leaf storage root', accountLeafStorageRootHex);
+  let accountLeafStorageRootHex: Hex | undefined;
+
+  try {
+    const lastAccountNode = accountPath.ordered[accountPath.ordered.length - 1]!;
+    const [, accountRecordItem] = listItemAt(lastAccountNode, rlpHeaderLength(lastAccountNode[0]!), 1);
+    accountLeafStorageRootHex = bytesToHex(extractStorageRootFromAccountLeaf(lastAccountNode, accountRecordItem.payloadOffset)) as Hex;
+    console.info('[sync] account leaf storage root', accountLeafStorageRootHex);
+  } catch (error) {
+    console.info('[sync] account leaf storage root fallback', { reason: error instanceof Error ? error.message : String(error) });
+  }
   const accountNodes = packStaticPathNodes(accountPath.ordered);
   const accountNodeLens = packStaticPathScalars(accountPath.nodeLens).map((value) => Number(value));
-  const accountNodeTypes = packStaticPathScalars(accountPath.nodeTypes).map((value) => Number(value));
   const accountRealSteps = Number(accountPath.ordered.length);
   const storageProofKeyHex = storageProofKey as Hex;
   const storageTrieKeyHex = keccak256(hexToBytes(storageProofKeyHex));
@@ -867,33 +988,32 @@ export async function buildLoanProofInputs(params: LoanProofParams): Promise<Loa
   });
   const storageNodes = packStaticPathNodes(storagePath.ordered);
   const storageNodeLens = packStaticPathScalars(storagePath.nodeLens).map((value) => Number(value));
-  const storageNodeTypes = packStaticPathScalars(storagePath.nodeTypes).map((value) => Number(value));
   const storageRealSteps = Number(storagePath.ordered.length);
   const score = predictedScore;
+  const publicCommitment = await computePublicCommitment(inferredStateRoot, isSolvent, score);
+  const expectedPublicCommitment = await computePublicCommitment(inferredStateRoot, isSolvent, score);
+
+  if (publicCommitment.toLowerCase() !== expectedPublicCommitment.toLowerCase()) {
+    throw new Error('Public commitment mismatch for inferred state root.');
+  }
+
   const repaymentRate = Number(score) * 10000;
-  const storageRootBytes = Array.from(hexToBytes(inferredStorageRoot));
-  const storageProofKeyBytes = Array.from(hexToBytes(storageTrieKeyHex));
   const storageProofKeyNibbles = expandToNibbles(hexToBytes(storageTrieKeyHex));
 
   const inputs: LoanProofInputs = {
-    account: {
-      nodes: accountNodes,
-      lens: accountNodeLens,
-      steps: accountRealSteps,
-      key: accountTrieKeyNibbles,
-      state_root: Array.from(hexToBytes(inferredStateRoot)),
-      storage_root: storageRootBytes,
-    },
-    storage: {
-      repayment_rate: repaymentRate,
-      storage_root: storageRootBytes,
-      nodes: storageNodes,
-      lens: storageNodeLens,
-      steps: storageRealSteps,
-      key: storageProofKeyNibbles,
-      is_solvent: isSolvent,
-      credit_score: score,
-    },
+    state_root: Array.from(hexToBytes(inferredStateRoot)),
+    public_commitment: publicCommitment,
+    account_nodes: accountNodes,
+    account_lens: accountNodeLens,
+    account_steps: accountRealSteps,
+    account_key: accountTrieKeyNibbles,
+    storage_nodes: storageNodes,
+    storage_lens: storageNodeLens,
+    storage_steps: storageRealSteps,
+    storage_key: storageProofKeyNibbles,
+    repayment_rate: repaymentRate,
+    is_solvent: isSolvent,
+    credit_score: score,
     metadata: {
       nonce: params.nonce,
       chainId,
@@ -902,6 +1022,7 @@ export async function buildLoanProofInputs(params: LoanProofParams): Promise<Loa
       blockNumber,
       userConfig,
       stateRoot: inferredStateRoot,
+      publicCommitment,
       accountTrieKey: accountTrieKeyHex,
       storageRoot: inferredStorageRoot,
       storageProofKey: storageProofKeyHex,
