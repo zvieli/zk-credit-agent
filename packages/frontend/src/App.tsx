@@ -5,6 +5,9 @@ import { createPublicClient, getAddress, http, keccak256 } from 'viem';
 import { mainnet } from 'viem/chains';
 import { buildScoreProofInputs, type GeneratedProof, type ScoreProofInputs } from './proverScore';
 import { warmProofEngine } from './prover';
+import ActionHub from './components/ActionHub';
+import ConfigPanel from './components/ConfigPanel';
+import SummaryPanel from './components/SummaryPanel';
 
 type StepStatus = 'idle' | 'working' | 'complete' | 'error';
 type FlowPhase = 'IDLE' | 'AXIOM_REQUESTED' | 'AXIOM_VERIFIED' | 'NOIR_PROVING' | 'COMPLETED';
@@ -235,34 +238,7 @@ function isLocalForkSession(rpcUrl: string, chainName?: string) {
   return normalizedChainName.includes('anvil') || normalizedChainName.includes('hardhat') || normalizedChainName.includes('localhost');
 }
 
-function StepCard(props: {
-  index: string;
-  title: string;
-  message: string;
-  status: StepStatus;
-  actionLabel?: string;
-  onAction?: () => Promise<void>;
-  disabled?: boolean;
-  details?: React.ReactNode;
-}) {
-  return (
-    <div className={`step ${statusTone(props.status)}`}>
-      <div className="step-header">
-        <div>
-          <span className="step-index">{props.index}</span>
-          <h3>{props.title}</h3>
-        </div>
-        {props.onAction && props.actionLabel ? (
-          <button onClick={props.onAction} disabled={props.disabled}>
-            {props.actionLabel}
-          </button>
-        ) : null}
-      </div>
-      <p>{props.message}</p>
-      {props.details}
-    </div>
-  );
-}
+// Inline StepCard was extracted to src/components/StepCard.tsx
 
 function App() {
   const { address, isConnected, chain } = useAccount();
@@ -284,16 +260,16 @@ function App() {
   const [deploymentChainId, setDeploymentChainId] = useState<number>(mainnet.id);
   const connectedChainId = chain?.id ?? walletClient?.chain?.id;
   const axiomSourceChainId = connectedChainId ?? deploymentChainId;
-  const [borrowerAddress, setBorrowerAddress] = useState('');
+  const [userAddress, setUserAddress] = useState('');
   const [nonce, setNonce] = useState(() => Math.floor(Date.now() / 1000) >>> 0);
   const [scoreInputs, setScoreInputs] = useState<ScoreProofInputs | null>(null);
   const [combinedProof, setCombinedProof] = useState<GeneratedProof | null>(null);
   const [scoreTxHash, setScoreTxHash] = useState<`0x${string}` | null>(null);
   const [axiomDispatch, setAxiomDispatch] = useState<{ txHash: `0x${string}`; queryId: string; queryHash: `0x${string}`; verifiedRoot: `0x${string}` | null } | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const resolvedCreditPolicyAddress = resolveOrFallbackAddress(creditPolicyAddress, fallbackCreditPolicyAddress);
   const resolvedScoreRegistryAddress = resolveOrFallbackAddress(scoreRegistryAddress, fallbackScoreRegistryAddress);
-
-  const phaseIndex = flowPhases.findIndex((item) => item.phase === flowPhase);
 
   useEffect(() => {
     if (scoreInputs || combinedProof || axiomDispatch) {
@@ -308,10 +284,10 @@ function App() {
   }, [scoreInputs, combinedProof, axiomDispatch, flowPhase]);
 
   useEffect(() => {
-    if (address && !borrowerAddress) {
-      setBorrowerAddress(address);
+    if (address && !userAddress) {
+      setUserAddress(address);
     }
-  }, [address, borrowerAddress]);
+  }, [address, userAddress]);
 
   useEffect(() => {
     let cancelled = false;
@@ -380,7 +356,7 @@ function App() {
   }
 
   async function handleAxiomSync() {
-    if (!borrowerAddress) {
+    if (!userAddress) {
       setStatus((current) => ({
         ...current,
         sync: { status: 'error', message: 'Set the user, oracle, and ScoreRegistry addresses first.' },
@@ -413,7 +389,7 @@ function App() {
       const aavePoolAddress = '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2';
 
       const inputs = await buildScoreProofInputs({
-        userAddress: borrowerAddress,
+        userAddress,
         contractAddress: aavePoolAddress,
         nonce,
         chainId: connectedChainId ?? deploymentChainId,
@@ -503,7 +479,7 @@ function App() {
 
     try {
       const requestResult = await postBackendJson<AxiomRequestResult>('/api/request-axiom-root', {
-        userAddress: borrowerAddress,
+        userAddress,
         blockNumber,
         chainId: axiomSourceChainId,
         rpcUrl,
@@ -555,7 +531,7 @@ function App() {
       currentPhase = 'NOIR_PROVING';
       setFlowPhase(currentPhase);
       const proof = await postBackendJson<GenerateLoanProofResult>('/api/generate-loan-proof', {
-        userAddress: borrowerAddress,
+        userAddress,
         blockNumber,
         chainId,
         rpcUrl,
@@ -602,7 +578,7 @@ function App() {
           activeMetadata.isSolvent,
           proofHash,
           activeMetadata.nonce,
-          getAddress(borrowerAddress),
+          getAddress(userAddress),
           activeMetadata.stateRoot,
           BigInt(activeMetadata.blockNumber),
         ],
@@ -648,6 +624,15 @@ function App() {
       <div className="backdrop backdrop-a" />
       <div className="backdrop backdrop-b" />
 
+      <div className="shell-chrome">
+        <button type="button" className="chrome-toggle" onClick={() => setSidebarOpen((current) => !current)}>
+          {sidebarOpen ? 'Hide settings' : 'Show settings'}
+        </button>
+        <button type="button" className="chrome-toggle" onClick={() => setDrawerOpen((current) => !current)}>
+          {drawerOpen ? 'Hide proof data' : 'Show proof data'}
+        </button>
+      </div>
+
       <header className="hero">
         <div>
           <p className="eyebrow">Protocol v19 dashboard</p>
@@ -672,215 +657,47 @@ function App() {
         </div>
       </header>
 
-      <main className="layout">
-        <section className="card config-card">
-          <div className="card-header">
-            <h2>Runtime configuration</h2>
-            <p>Set the RPC endpoint and contract addresses for this session.</p>
-          </div>
+      <div className={`hidden-sidebar ${sidebarOpen ? 'is-open' : 'is-closed'}`}>
+        <ConfigPanel
+          rpcUrl={rpcUrl}
+          setRpcUrl={setRpcUrl}
+          creditPolicyAddress={creditPolicyAddress}
+          setCreditPolicyAddress={setCreditPolicyAddress}
+          scoreRegistryAddress={scoreRegistryAddress}
+          setScoreRegistryAddress={setScoreRegistryAddress}
+          nonce={nonce}
+          setNonce={setNonce}
+          isOpen={sidebarOpen}
+          onToggle={() => setSidebarOpen((current) => !current)}
+        />
+      </div>
 
-          <div className="field-grid">
-            <label>
-              <span>RPC URL</span>
-              <input value={rpcUrl} onChange={(event) => setRpcUrl(event.target.value)} placeholder="http://127.0.0.1:8545" />
-            </label>
-            <label>
-              <span>Oracle contract address</span>
-              <input value={creditPolicyAddress} onChange={(event) => setCreditPolicyAddress(event.target.value)} placeholder="0x..." />
-            </label>
-            <label>
-              <span>Score registry address</span>
-              <input value={scoreRegistryAddress} onChange={(event) => setScoreRegistryAddress(event.target.value)} placeholder="0x..." />
-            </label>
-            <label>
-              <span>User address</span>
-              <input value={borrowerAddress} onChange={(event) => setBorrowerAddress(event.target.value)} placeholder="0x..." />
-            </label>
-            <label>
-              <span>Nonce</span>
-              <input
-                value={nonce}
-                onChange={(event) => setNonce(Number(event.target.value) || 0)}
-                inputMode="numeric"
-                type="number"
-                min={0}
-              />
-            </label>
-          </div>
-        </section>
+      <main className="layout layout--centered">
+        <ActionHub
+          flowPhases={flowPhases}
+          flowPhase={flowPhase}
+          status={status}
+          scoreInputs={scoreInputs}
+          axiomDispatch={axiomDispatch}
+          combinedProof={combinedProof}
+          proofHash={proofHash}
+          scoreTxHash={scoreTxHash}
+          handleRunAxiomNoirFlow={handleRunAxiomNoirFlow}
+          handleAxiomSync={handleAxiomSync}
+          userAddress={userAddress}
+          setUserAddress={setUserAddress}
+        />
 
-        <section className="card pipeline-card">
-          <div className="pipeline-actions">
-            <button
-              onClick={handleRunAxiomNoirFlow}
-              disabled={status.sync.status !== 'complete' || !scoreInputs || status.request.status === 'working' || status.verify.status === 'working' || status.proof.status === 'working' || status.submit.status === 'working'}
-            >
-              Run Axiom + Noir Flow
-            </button>
-          </div>
-
-          <div className="flow-tracker" aria-label="Attestation progress">
-            {flowPhases.map((item, index) => {
-              const phaseState = index < phaseIndex ? 'complete' : index === phaseIndex ? 'active' : 'pending';
-
-              return (
-                <div key={item.phase} className={`flow-step ${phaseState}`}>
-                  <span className="flow-step-index">{String(index + 1).padStart(2, '0')}</span>
-                  <strong>{item.label}</strong>
-                  <small>{item.description}</small>
-                </div>
-              );
-            })}
-          </div>
-
-          <StepCard
-            index="01"
-            title="Axiom Sync"
-            message={status.sync.message}
-            status={status.sync.status}
-            actionLabel="Sync state root"
-            onAction={handleAxiomSync}
-            disabled={!borrowerAddress || status.sync.status === 'working'}
-            details={scoreInputs ? (
-              <div className="metrics">
-                <div>
-                  <span>Block</span>
-                  <strong>{scoreInputs.metadata.blockNumber.toString()}</strong>
-                </div>
-                <div>
-                  <span>State root</span>
-                  <strong>{formatHash(scoreInputs.metadata.stateRoot)}</strong>
-                </div>
-                <div>
-                  <span>Predicted credit score</span>
-                  <strong>{scoreInputs.metadata.score}</strong>
-                </div>
-              </div>
-            ) : null}
-          />
-
-          <StepCard
-            index="02"
-            title="Axiom Requested"
-            message={status.request.message}
-            status={status.request.status}
-            details={axiomDispatch ? (
-              <div className="metrics">
-                <div>
-                  <span>queryId</span>
-                  <strong>{axiomDispatch.queryId}</strong>
-                </div>
-                <div>
-                  <span>tx hash</span>
-                  <strong>{formatHash(axiomDispatch.txHash)}</strong>
-                </div>
-                <div>
-                  <span>query hash</span>
-                  <strong>{formatHash(axiomDispatch.queryHash)}</strong>
-                </div>
-              </div>
-            ) : null}
-          />
-
-          <StepCard
-            index="03"
-            title="Axiom Verified"
-            message={status.verify.message}
-            status={status.verify.status}
-            details={axiomDispatch?.verifiedRoot ? (
-              <div className="metrics">
-                <div>
-                  <span>Verified root</span>
-                  <strong>{formatHash(axiomDispatch.verifiedRoot)}</strong>
-                </div>
-                <div>
-                  <span>Expected root</span>
-                  <strong>{scoreInputs ? formatHash(scoreInputs.metadata.stateRoot) : 'pending'}</strong>
-                </div>
-              </div>
-            ) : null}
-          />
-
-          <StepCard
-            index="04"
-            title="Noir Proving"
-            message={status.proof.message}
-            status={status.proof.status}
-            details={combinedProof ? (
-              <div className="metrics">
-                <div>
-                  <span>Proof</span>
-                  <strong>{formatHash(combinedProof.proof)}</strong>
-                </div>
-                <div>
-                  <span>Public inputs</span>
-                  <strong>{combinedProof.publicInputs.length}</strong>
-                </div>
-              </div>
-            ) : null}
-          />
-
-          <StepCard
-            index="05"
-            title="Completed"
-            message={status.submit.message}
-            status={status.submit.status}
-            details={(
-              <div className="metrics">
-                <div>
-                  <span>Proof hash</span>
-                  <strong>{proofHash ? formatHash(proofHash) : 'not ready'}</strong>
-                </div>
-                <div>
-                  <span>Transaction</span>
-                  <strong>{scoreTxHash ? formatHash(scoreTxHash) : 'pending'}</strong>
-                </div>
-              </div>
-            )}
-          />
-        </section>
-
-        <section className="card summary-card">
-          <div className="card-header">
-            <h2>Verified Credit Score summary</h2>
-            <p>Inputs are assembled client-side, Axiom is dispatched first, proof generation waits for verified roots, and the wallet signs the submission.</p>
-          </div>
-
-          <div className="summary-grid">
-            <div>
-              <span>User</span>
-              <strong>{scoreInputs ? scoreInputs.metadata.userAddress : borrowerAddress || 'unset'}</strong>
-            </div>
-            <div>
-              <span>Oracle contract</span>
-              <strong>{scoreInputs ? scoreInputs.metadata.contractAddress : resolvedCreditPolicyAddress}</strong>
-            </div>
-            <div>
-              <span>Axiom query id</span>
-              <strong>{axiomDispatch?.queryId ?? 'pending'}</strong>
-            </div>
-            <div>
-              <span>Axiom tx hash</span>
-              <strong>{axiomDispatch ? formatHash(axiomDispatch.txHash) : 'pending'}</strong>
-            </div>
-            <div>
-              <span>State root</span>
-              <strong>{scoreInputs ? scoreInputs.metadata.stateRoot : 'pending'}</strong>
-            </div>
-            <div>
-              <span>Storage root</span>
-              <strong>{scoreInputs ? scoreInputs.metadata.storageRoot : 'pending'}</strong>
-            </div>
-            <div>
-              <span>Storage proof key</span>
-              <strong>{scoreInputs ? scoreInputs.metadata.storageProofKey : 'pending'}</strong>
-            </div>
-            <div>
-              <span>Oracle score</span>
-              <strong>{scoreInputs ? scoreInputs.metadata.score.toLocaleString() : 'pending'}</strong>
-            </div>
-          </div>
-        </section>
+        <div className={`bottom-drawer ${drawerOpen ? 'is-open' : 'is-closed'}`}>
+        <SummaryPanel
+          scoreInputs={scoreInputs}
+          resolvedCreditPolicyAddress={resolvedCreditPolicyAddress}
+          axiomDispatch={axiomDispatch}
+          scoreTxHash={scoreTxHash}
+          isOpen={drawerOpen}
+          onToggle={() => setDrawerOpen((current) => !current)}
+        />
+        </div>
       </main>
     </div>
   );
