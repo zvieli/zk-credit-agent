@@ -31,7 +31,7 @@ async function main() {
   const creditPolicyAddress = process.env.CREDIT_POLICY_ADDRESS ?? process.env.VITE_CREDIT_POLICY_ADDRESS ?? deployment.creditPolicyAddress;
   const scoreRegistryAddress = process.env.SCORE_REGISTRY_ADDRESS ?? process.env.VITE_SCORE_REGISTRY_ADDRESS ?? deployment.scoreRegistryAddress;
   const rpcUrl = process.env.RPC_URL ?? process.env.VITE_RPC_URL ?? deployment.rpcUrl ?? 'http://127.0.0.1:8545';
-  const chainId = process.env.CHAIN_ID ? Number(process.env.CHAIN_ID) : Number(process.env.VITE_CHAIN_ID ?? deployment.chainId ?? 1);
+  const chainId = 1;
   const nonce = process.env.NONCE ? Number(process.env.NONCE) : Math.floor(Date.now() / 1000) >>> 0;
 
   if (!creditPolicyAddress) {

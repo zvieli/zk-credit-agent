@@ -150,7 +150,7 @@ async function main() {
         const predictedScore = (netEquity / 20) + hfBonus + walletWealth - penalty;
         const finalPredictedScore = Math.max(0, Math.min(Math.floor(predictedScore), 1000));
 
-        if (usdcBalance > 1000) {
+        if (usdcBalance > 100) {
             console.log(`-------------------`);
             console.log(`✅ ${category}: ${user}`);
             console.log(`💰 Collateral: $${collateral.toFixed(2)} | ETH: ${ethBalance.toFixed(2)} | USDC: $${usdcBalance.toFixed(2)}`);

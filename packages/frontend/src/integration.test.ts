@@ -386,9 +386,9 @@ beforeAll(() => {
         const proofData = await getUserFeaturesAndSignature(
           body.userAddress,
           body.contractAddress,
-          body.chainId ?? chainId,
+          body.chainId ?? mainnet.id,
           body.nonce ?? defaultNonce,
-          body.rpcUrl ?? process.env.PROOF_RPC_URL ?? rpcUrl,
+          body.rpcUrl ?? process.env.PROOF_RPC_URL ?? 'http://127.0.0.1:3124',
           body.overrides,
         );
 
@@ -416,7 +416,7 @@ beforeAll(() => {
           userAddress: body.userAddress,
           contractAddress: body.scoreRegistryAddress ?? readDeploymentConfig().scoreRegistryAddress ?? '0x65a44ee2218a4d56fbf6a7d1a65d267b65347e0b',
           nonce: body.nonce,
-          chainId: body.chainId ?? readDeploymentConfig().chainId ?? 1,
+          chainId: body.chainId ?? mainnet.id,
           scoreRegistryAddress: body.scoreRegistryAddress ?? readDeploymentConfig().scoreRegistryAddress ?? '0x65a44ee2218a4d56fbf6a7d1a65d267b65347e0b',
           rpcUrl: body.rpcUrl ?? process.env.PROOF_RPC_URL ?? 'http://127.0.0.1:3124',
           provenanceOverrides: { blockNumber: BigInt(body.blockNumber) },
@@ -446,7 +446,7 @@ describe('frontend logic integration', () => {
     const deployment = readDeploymentConfig();
     const rpcUrl = deployment.rpcUrl ?? 'http://127.0.0.1:8545';
     const proofRpcUrl = process.env.PROOF_RPC_URL ?? 'http://127.0.0.1:3124';
-    const chainId = deployment.chainId ?? 1;
+    const chainId = mainnet.id;
     const scoreRegistryAddress = resolveOrFallbackAddress(deployment.scoreRegistryAddress, '0x65a44ee2218a4d56fbf6a7d1a65d267b65347e0b');
     const creditPolicyAddress = resolveOrFallbackAddress(deployment.creditPolicyAddress, '0x386121D50d8591873C8b8b15d666E3A3705978f8');
 
@@ -532,3 +532,4 @@ describe('frontend logic integration', () => {
     }
   }, 900000);
 });
+

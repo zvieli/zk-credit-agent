@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RainbowKitProvider, lightTheme } from '@rainbow-me/rainbowkit';
 import { WagmiProvider, createConfig, http } from 'wagmi';
 import { injected } from 'wagmi/connectors';
-import { anvil } from 'viem/chains';
+import { mainnet } from 'viem/chains';
 import App from './App';
 import './styles.css';
 import '@rainbow-me/rainbowkit/styles.css';
@@ -26,11 +26,22 @@ if (!window.crossOriginIsolated) {
 }
 
 const queryClient = new QueryClient();
+
+const localAnvil = {
+  ...mainnet,
+  id: 31337,
+  name: 'Anvil Fork',
+  rpcUrls: {
+    default: { http: ['http://127.0.0.1:8545'] },
+    public: { http: ['http://127.0.0.1:8545'] },
+  },
+};
+
 const config = createConfig({
-  chains: [anvil],
+  chains: [localAnvil],
   connectors: hasInjectedProvider ? [injected()] : [],
   transports: {
-    [anvil.id]: http(import.meta.env.VITE_RPC_URL ?? 'http://127.0.0.1:8545'),
+    [localAnvil.id]: http('http://127.0.0.1:8545'),
   },
 });
 

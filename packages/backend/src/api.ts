@@ -2,7 +2,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createPublicClient, createWalletClient, getAddress, http, type Chain } from 'viem';
-import { anvil } from 'viem/chains';
+import { mainnet } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import { initBackendEnv } from './env.ts';
 import { getUserFeaturesAndSignature } from './index.ts';
@@ -15,6 +15,7 @@ const __dirname = path.dirname(__filename);
 initBackendEnv();
 
 type Hex = `0x${string}`;
+const MAINNET_CHAIN_ID = 1;
 
 const scoreRegistryAbi = [
   {
@@ -123,10 +124,6 @@ function resolveProofRpcUrl() {
     return process.env.RPC_URL;
   }
 
-  if (process.env.ALCHEMY_API_KEY) {
-    return `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`;
-  }
-
   return 'http://127.0.0.1:8545';
 }
 
@@ -134,11 +131,9 @@ function resolveTransactionRpcUrl() {
   return process.env.ANVIL_RPC_URL ?? process.env.RPC_URL ?? process.env.TX_RPC_URL ?? 'http://127.0.0.1:8545';
 }
 
-function resolveRuntimeRpcChain(chainId: number, rpcUrl: string): Chain {
+function resolveRuntimeRpcChain(rpcUrl: string): Chain {
   return {
-    ...anvil,
-    id: chainId,
-    name: chainId === anvil.id ? 'anvil-localhost' : 'rpc-fork',
+    ...mainnet,
     rpcUrls: {
       default: { http: [rpcUrl] },
       public: { http: [rpcUrl] },
@@ -276,11 +271,13 @@ async function handleRequestAxiomRoot(body: RequestAxiomRootRequest, response: S
   }
 
   try {
+    const deployment = (await import('./env.ts')).readFrontendDeploymentConfig();
+    const chainId = body.chainId ?? deployment.chainId ?? 31337;
     const creditPolicyAddress = resolveConfiguredCreditPolicyAddress(body.creditPolicyAddress);
     const result = await requestAxiomRoot({
       userAddress: tryGetAddress(body.userAddress, 'userAddress'),
       blockNumber,
-      chainId: body.chainId ?? Number(process.env.CHAIN_ID ?? 1),
+      chainId,
       ...(body.rpcUrl ? { rpcUrl: body.rpcUrl } : {}),
       creditPolicyAddress,
       ...(body.axiomV2QueryAddress ? { axiomV2QueryAddress: body.axiomV2QueryAddress } : {}),
@@ -315,11 +312,13 @@ async function handleGenerateLoanProof(parsedBody: GenerateLoanProofRequest | un
   }
 
   try {
+    const deployment = (await import('./env.ts')).readFrontendDeploymentConfig();
+    const chainId = parsedBody.chainId ?? deployment.chainId ?? 31337;
     const creditPolicyAddress = resolveConfiguredCreditPolicyAddress(parsedBody.creditPolicyAddress);
     const proof = await generateLoanProof({
       userAddress: tryGetAddress(parsedBody.userAddress, 'userAddress'),
       blockNumber,
-      chainId: parsedBody.chainId ?? Number(process.env.CHAIN_ID ?? 1),
+      chainId,
       ...(parsedBody.nonce !== undefined ? { nonce: parsedBody.nonce } : {}),
       ...(parsedBody.rpcUrl ? { rpcUrl: parsedBody.rpcUrl } : {}),
       creditPolicyAddress,
@@ -331,6 +330,7 @@ async function handleGenerateLoanProof(parsedBody: GenerateLoanProofRequest | un
       stateRoot: proof.stateRoot,
       blockNumber: proof.blockNumber.toString(),
       creditPolicyAddress: proof.creditPolicyAddress,
+      metadata: proof.metadata,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Proof generation failed.';
@@ -358,34 +358,32 @@ async function handleGetProofData(request: IncomingMessage, response: ServerResp
     }
 
     if (chainId !== undefined) {
-      body.chainId = chainId;
-    }
-
-    if (nonce !== undefined) {
-      body.nonce = nonce;
+      const deployment = (await import('./env.ts')).readFrontendDeploymentConfig();
+      body.chainId = deployment.chainId ?? 31337;
     }
 
     const rpcUrl = url.searchParams.get('rpcUrl') ?? undefined;
     if (rpcUrl) {
       body.rpcUrl = rpcUrl;
     }
-  } else {
+    } else {
     if (!parsedBody) {
       sendJson(response, 400, { error: 'Invalid JSON body' });
       return;
     }
-  }
+    }
 
-  const overrides = body.overrides && typeof body.overrides === 'object' ? { ...body.overrides } : undefined;
+    const overrides = body.overrides && typeof body.overrides === 'object' ? { ...body.overrides } : undefined;
 
-  if (!body.userAddress) {
+    if (!body.userAddress) {
     sendJson(response, 400, { error: 'Missing userAddress.' });
     return;
-  }
+    }
 
-  try {
+    try {
+    const deployment = (await import('./env.ts')).readFrontendDeploymentConfig();
     const contractAddress = tryGetAddress(body.contractAddress, 'contractAddress');
-    const chainId = body.chainId ?? Number(process.env.CHAIN_ID ?? 1);
+    const chainId = body.chainId ?? deployment.chainId ?? 31337;
     const nonce = body.nonce ?? Math.floor(Date.now() / 1000) >>> 0;
 
     const proofData = await getUserFeaturesAndSignature(
@@ -404,6 +402,10 @@ async function handleGetProofData(request: IncomingMessage, response: ServerResp
   }
 }
 
+/**
+ * @deprecated This endpoint is for debugging only.
+ * The primary flow should now use the user's connected wallet to sign and submit scores.
+ */
 async function handleSubmitScore(parsedBody: SubmitScoreRequest | undefined, response: ServerResponse) {
   if (!parsedBody || typeof parsedBody !== 'object') {
     sendJson(response, 400, { error: 'Invalid JSON body' });
@@ -422,14 +424,17 @@ async function handleSubmitScore(parsedBody: SubmitScoreRequest | undefined, res
 
   try {
     const scoreRegistryAddress = resolveScoreRegistryAddress(parsedBody.scoreRegistryAddress);
-    const account = privateKeyToAccount(resolveAgentPrivateKey());
+    const privateKey = process.env.AGENT_PRIVATE_KEY;
+    if (!privateKey) {
+      throw new Error('AGENT_PRIVATE_KEY not configured on server.');
+    }
+    const account = privateKeyToAccount(privateKey as Hex);
     const rpcUrl = resolveTransactionRpcUrl();
     const publicClient = createPublicClient({
-      chain: anvil,
+      chain: resolveRuntimeRpcChain(rpcUrl),
       transport: http(rpcUrl, { timeout: 300000 }),
     });
-    const rpcChainId = await publicClient.getChainId();
-    const rpcChain = resolveRuntimeRpcChain(rpcChainId, rpcUrl);
+    const rpcChain = resolveRuntimeRpcChain(rpcUrl);
     const walletClient = createWalletClient({
       account,
       chain: rpcChain,
@@ -452,6 +457,10 @@ async function handleSubmitScore(parsedBody: SubmitScoreRequest | undefined, res
   }
 }
 
+/**
+ * @deprecated This endpoint is for debugging only.
+ * The primary flow should now use the user's connected wallet to sign and submit scores.
+ */
 async function handleRegisterScore(parsedBody: RegisterScoreRequest | undefined, response: ServerResponse) {
   if (!parsedBody || typeof parsedBody !== 'object') {
     sendJson(response, 400, { error: 'Invalid JSON body' });
@@ -477,14 +486,18 @@ async function handleRegisterScore(parsedBody: RegisterScoreRequest | undefined,
     const userAddress = tryGetAddress(parsedBody.userAddress, 'userAddress');
     const stateRoot = parsedBody.stateRoot as Hex;
     const blockNumber = BigInt(parsedBody.blockNumber as string | number | bigint);
-    const account = privateKeyToAccount(resolveAgentPrivateKey());
+    
+    const privateKey = process.env.AGENT_PRIVATE_KEY;
+    if (!privateKey) {
+      throw new Error('AGENT_PRIVATE_KEY not configured on server.');
+    }
+    const account = privateKeyToAccount(privateKey as Hex);
     const rpcUrl = resolveTransactionRpcUrl();
     const publicClient = createPublicClient({
-      chain: anvil,
+      chain: resolveRuntimeRpcChain(rpcUrl),
       transport: http(rpcUrl, { timeout: 300000 }),
     });
-    const rpcChainId = await publicClient.getChainId();
-    const rpcChain = resolveRuntimeRpcChain(rpcChainId, rpcUrl);
+    const rpcChain = resolveRuntimeRpcChain(rpcUrl);
     const walletClient = createWalletClient({
       account,
       chain: rpcChain,

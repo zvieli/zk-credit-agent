@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import { useAccount, useWalletClient } from 'wagmi';
+import { useAccount, usePublicClient, useWalletClient } from 'wagmi';
 import { createPublicClient, getAddress, http, keccak256 } from 'viem';
-import { anvil } from 'viem/chains';
+import { mainnet } from 'viem/chains';
 import { buildScoreProofInputs, type GeneratedProof, type ScoreProofInputs } from './proverScore';
 import { warmProofEngine } from './prover';
 
@@ -37,10 +37,6 @@ type GenerateLoanProofResult = GeneratedProof & {
   blockNumber: string;
   creditPolicyAddress: `0x${string}`;
   metadata: ScoreProofInputs['metadata'];
-};
-
-type RegisterScoreResult = {
-  txHash: `0x${string}`;
 };
 
 const contractAbi = [
@@ -136,7 +132,7 @@ function isZeroBytes32(value?: string | null) {
 
 async function readVerifiedRootOnChain(rpcUrl: string, creditPolicyAddress: `0x${string}`, blockNumber: bigint) {
   const publicClient = createPublicClient({
-    chain: anvil,
+    chain: mainnet,
     transport: http(rpcUrl, { timeout: 300000 }),
   });
 
@@ -271,6 +267,7 @@ function StepCard(props: {
 function App() {
   const { address, isConnected, chain } = useAccount();
   const { data: walletClient } = useWalletClient();
+  const publicClient = usePublicClient();
   const hasInjectedProvider = typeof window !== 'undefined' && Boolean((window as any).ethereum);
   const [flowPhase, setFlowPhase] = useState<FlowPhase>('IDLE');
   const [status, setStatus] = useState<StatusMap>({
@@ -280,19 +277,19 @@ function App() {
     proof: { status: 'idle', message: 'Generate the Noir proof after verification.' },
     submit: { status: 'idle', message: 'Register the verified score on-chain.' },
   });
-  const defaultRpcUrl = import.meta.env.VITE_ANVIL_RPC_URL ?? import.meta.env.VITE_RPC_URL ?? 'http://127.0.0.1:8545';
+  const defaultRpcUrl = 'http://127.0.0.1:8545';
   const [rpcUrl, setRpcUrl] = useState(defaultRpcUrl);
   const [creditPolicyAddress, setCreditPolicyAddress] = useState('');
   const [scoreRegistryAddress, setScoreRegistryAddress] = useState('');
-  const [deploymentChainId, setDeploymentChainId] = useState<number>(Number(import.meta.env.VITE_CHAIN_ID ?? anvil.id));
-  const axiomSourceChainId = Number(import.meta.env.VITE_AXIOM_SOURCE_CHAIN_ID ?? 1);
+  const [deploymentChainId, setDeploymentChainId] = useState<number>(mainnet.id);
+  const connectedChainId = chain?.id ?? walletClient?.chain?.id;
+  const axiomSourceChainId = connectedChainId ?? deploymentChainId;
   const [borrowerAddress, setBorrowerAddress] = useState('');
   const [nonce, setNonce] = useState(() => Math.floor(Date.now() / 1000) >>> 0);
   const [scoreInputs, setScoreInputs] = useState<ScoreProofInputs | null>(null);
   const [combinedProof, setCombinedProof] = useState<GeneratedProof | null>(null);
   const [scoreTxHash, setScoreTxHash] = useState<`0x${string}` | null>(null);
   const [axiomDispatch, setAxiomDispatch] = useState<{ txHash: `0x${string}`; queryId: string; queryHash: `0x${string}`; verifiedRoot: `0x${string}` | null } | null>(null);
-  const connectedChainId = chain?.id ?? walletClient?.chain?.id;
   const resolvedCreditPolicyAddress = resolveOrFallbackAddress(creditPolicyAddress, fallbackCreditPolicyAddress);
   const resolvedScoreRegistryAddress = resolveOrFallbackAddress(scoreRegistryAddress, fallbackScoreRegistryAddress);
 
@@ -323,6 +320,7 @@ function App() {
       setRpcUrl(defaultRpcUrl);
       setCreditPolicyAddress(fallbackCreditPolicyAddress);
       setScoreRegistryAddress(fallbackScoreRegistryAddress);
+      setDeploymentChainId(mainnet.id);
     };
 
     async function loadDeploymentConfig() {
@@ -344,16 +342,13 @@ function App() {
           return;
         }
 
-        if (deployment.chainId !== undefined) {
-          setDeploymentChainId(deployment.chainId);
-        }
-
         if (deployment.rpcUrl) {
           setRpcUrl(deployment.rpcUrl);
         }
 
         setCreditPolicyAddress(resolveOrFallbackAddress(deployment.creditPolicyAddress, fallbackCreditPolicyAddress));
         setScoreRegistryAddress(resolveOrFallbackAddress(deployment.scoreRegistryAddress, fallbackScoreRegistryAddress));
+        setDeploymentChainId(mainnet.id);
       } catch {
         if (cancelled) {
           return;
@@ -399,25 +394,27 @@ function App() {
     }));
 
     try {
-      if (connectedChainId && connectedChainId !== anvil.id && !isLocalForkSession(rpcUrl, chain?.name)) {
+      if (connectedChainId && connectedChainId !== mainnet.id && !isLocalForkSession(rpcUrl, chain?.name)) {
         setStatus((current) => ({
           ...current,
-          sync: { status: 'error', message: `Switch wallet to chain ${anvil.id} before syncing.` },
+          sync: { status: 'error', message: `Switch wallet to chain ${mainnet.id} before syncing.` },
         }));
         return;
       }
 
       const forkClient = createPublicClient({
-        chain: anvil,
+        chain: mainnet,
         transport: http(rpcUrl, { timeout: 300000 }),
       });
       const latestBlockNumber = await forkClient.getBlockNumber();
 
       console.log('[sync] calling:', resolveBackendApiUrl('/api/get-proof-data'));
 
+      const aavePoolAddress = '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2';
+
       const inputs = await buildScoreProofInputs({
         userAddress: borrowerAddress,
-        contractAddress: resolvedScoreRegistryAddress,
+        contractAddress: aavePoolAddress,
         nonce,
         chainId: connectedChainId ?? deploymentChainId,
         scoreRegistryAddress: resolvedScoreRegistryAddress,
@@ -425,7 +422,7 @@ function App() {
         provenanceOverrides: { blockNumber: latestBlockNumber },
         logger: {
           fetching: (message) => console.info('[sync] fetching', message),
-          rawResponse: (message) => console.info('[sync] raw response', message),
+          rawResponse: (message) => console.info('[sync] raw response', message.length > 200 ? message.slice(0, 200) + '... [truncated]' : message),
           parsedData: (data) => console.info('[sync] parsed data', data),
           formattedData: (data) => console.info('[sync] formatted data', data),
           inputsReady: (readyInputs) => console.info('[sync] inputs ready', {
@@ -476,10 +473,10 @@ function App() {
       return;
     }
 
-    if (connectedChainId && connectedChainId !== anvil.id && !isLocalForkSession(rpcUrl, chain?.name)) {
+    if (connectedChainId && connectedChainId !== mainnet.id && !isLocalForkSession(rpcUrl, chain?.name)) {
       setStatus((current) => ({
         ...current,
-        request: { status: 'error', message: `Switch wallet to chain ${anvil.id} before dispatching Axiom.` },
+        request: { status: 'error', message: `Switch wallet to chain ${mainnet.id} before dispatching Axiom.` },
       }));
       return;
     }
@@ -571,7 +568,7 @@ function App() {
       }
 
       const proofCommitment = proof.publicInputs[0] as `0x${string}`;
-      const backendMetadata = (proof as { metadata?: ScoreProofInputs['metadata'] }).metadata;
+      const backendMetadata = proof.metadata;
 
       if (backendMetadata) {
         if (backendMetadata.publicCommitment.toLowerCase() !== expectedCommitment.toLowerCase()) {
@@ -583,29 +580,42 @@ function App() {
         setScoreInputs((current) => current ? { ...current, metadata: backendMetadata } : current);
       }
 
+      const activeMetadata = backendMetadata ?? scoreInputs.metadata;
+
       setCombinedProof(proof);
       setStatus((current) => ({
         ...current,
         proof: { status: 'complete', message: `Backend Noir proof ready with ${proof.publicInputs.length} public inputs.` },
-        submit: { status: 'working', message: 'Submitting verifyAndRegisterScore to the oracle contract.' },
+        submit: { status: 'working', message: 'Please sign the transaction in your wallet.' },
       }));
 
       const proofHash = keccak256(proof.proof);
 
-      const submission = await postBackendJson<RegisterScoreResult>('/api/register-score', {
-        creditPolicyAddress: resolvedCreditPolicyAddress,
-        proof: proof.proof,
-        commitment: proofCommitment,
-        score: scoreInputs.metadata.score,
-        isSolvent: scoreInputs.metadata.isSolvent,
-        proofHash,
-        nonce: scoreInputs.metadata.nonce,
-        userAddress: getAddress(borrowerAddress),
-        stateRoot: scoreInputs.metadata.stateRoot,
-        blockNumber,
-      }, 60000);
+      const hash = await walletClient.writeContract({
+        address: resolvedCreditPolicyAddress,
+        abi: contractAbi,
+        functionName: 'verifyAndRegisterScore',
+        args: [
+          proof.proof,
+          proofCommitment,
+          activeMetadata.score,
+          activeMetadata.isSolvent,
+          proofHash,
+          activeMetadata.nonce,
+          getAddress(borrowerAddress),
+          activeMetadata.stateRoot,
+          BigInt(activeMetadata.blockNumber),
+        ],
+      });
 
-      const hash = submission.txHash;
+      setStatus((current) => ({
+        ...current,
+        submit: { status: 'working', message: `Transaction sent: ${formatHash(hash)}. Waiting for confirmation...` },
+      }));
+
+      if (publicClient) {
+        await publicClient.waitForTransactionReceipt({ hash });
+      }
 
       setScoreTxHash(hash);
       currentPhase = 'COMPLETED';

@@ -16,13 +16,31 @@ export type GeneratedProof = {
 
 export type LoanProofInputs = {
   state_root: number[];
+  public_commitment: Hex;
   account_nodes: number[][];
   account_lens: number[];
+  account_node_types: number[];
+  account_path_offsets: number[];
+  account_path_lens: number[];
+  account_value_offsets: number[];
+  account_value_lens: number[];
+  account_branch_indices: number[];
+  account_balance_offset: number;
+  account_balance_len: number;
+  account_storage_root_offset: number;
+  account_storage_root_len: number;
   account_steps: number;
   account_key: number[];
   storage_nodes: number[][];
-  public_commitment: Hex;
   storage_lens: number[];
+  storage_node_types: number[];
+  storage_path_offsets: number[];
+  storage_path_lens: number[];
+  storage_value_offsets: number[];
+  storage_value_lens: number[];
+  storage_branch_indices: number[];
+  storage_value_offset: number;
+  storage_value_len: number;
   storage_steps: number;
   storage_key: number[];
   repayment_rate: number;
@@ -414,6 +432,10 @@ function listItemAt(data: Uint8Array, listPayloadOffset: number, targetIndex: nu
 function describeStaticPathProof(nodesHex: readonly string[], rootHash: Hex, key: Uint8Array): {
   ordered: Uint8Array[];
   childOffsets: number[];
+  childLens: number[];
+  pathOffsets: number[];
+  pathLens: number[];
+  branchIndices: number[];
   nodeLens: number[];
   nodeTypes: number[];
   trieKey: Uint8Array;
@@ -423,6 +445,10 @@ function describeStaticPathProof(nodesHex: readonly string[], rootHash: Hex, key
     const remaining = nodesHex.map((nodeHex) => hexToBytes(nodeHex as Hex));
     const ordered: Uint8Array[] = [];
     const childOffsets: number[] = [];
+    const childLens: number[] = [];
+    const pathOffsets: number[] = [];
+    const pathLens: number[] = [];
+    const branchIndices: number[] = [];
     const nodeLens: number[] = [];
     const nodeTypes: number[] = [];
     const pathNibbles: number[] = [];
@@ -446,16 +472,26 @@ function describeStaticPathProof(nodesHex: readonly string[], rootHash: Hex, key
 
       if (isCompactNode) {
         nodeTypes.push(1);
+        pathOffsets.push(firstItem.payloadOffset);
+        pathLens.push(firstItem.payloadLen);
+        branchIndices.push(0);
+
         const { isLeaf, consumed } = verifyCompactPath(currentNode, firstItem.payloadOffset, firstItem.payloadLen, key, keyOffset);
         const compactNibbles = compactPathToNibbles(currentNode, firstItem.payloadOffset, firstItem.payloadLen);
         pathNibbles.push(...compactNibbles);
         keyOffset += consumed;
-        childOffsets.push(secondItemOffset);
+
+        childOffsets.push(secondItem.payloadOffset);
+        childLens.push(secondItem.payloadLen);
 
         if (isLeaf) {
           return {
             ordered,
             childOffsets,
+            childLens,
+            pathOffsets,
+            pathLens,
+            branchIndices,
             nodeLens,
             nodeTypes,
             trieKey: safeTrieKeyFromNibbles(pathNibbles),
@@ -481,10 +517,14 @@ function describeStaticPathProof(nodesHex: readonly string[], rootHash: Hex, key
       }
 
       nodeTypes.push(0);
+      pathOffsets.push(0);
+      pathLens.push(0);
 
       if (keyOffset === 64) {
         const [terminalItemOffset, terminalItem] = listItemAt(currentNode, decodedNode.payloadOffset, 16);
-        childOffsets.push(terminalItemOffset);
+        childOffsets.push(terminalItem.payloadOffset);
+        childLens.push(terminalItem.payloadLen);
+        branchIndices.push(16);
 
         if (terminalItem.payloadLen === 0) {
           throw new Error('Terminal branch node is missing its value item');
@@ -493,12 +533,17 @@ function describeStaticPathProof(nodesHex: readonly string[], rootHash: Hex, key
         return {
           ordered,
           childOffsets,
+          childLens,
+          pathOffsets,
+          pathLens,
+          branchIndices,
           nodeLens,
           nodeTypes,
           trieKey: safeTrieKeyFromNibbles(pathNibbles),
           leafValue: currentNode.slice(terminalItem.payloadOffset, terminalItem.payloadOffset + terminalItem.payloadLen),
         };
       }
+
       const branchIndex = keyNibbleAt(key, keyOffset);
       const [candidateOffset, candidateChild] = listItemAt(currentNode, decodedNode.payloadOffset, branchIndex);
 
@@ -509,12 +554,15 @@ function describeStaticPathProof(nodesHex: readonly string[], rootHash: Hex, key
       const reference = currentNode.slice(candidateChild.payloadOffset, candidateChild.payloadOffset + candidateChild.payloadLen);
       const nextIndex = remaining.findIndex((candidate) => nodeMatchesReference(candidate, reference));
 
+      childOffsets.push(candidateChild.payloadOffset);
+      childLens.push(candidateChild.payloadLen);
+      branchIndices.push(branchIndex);
+
       if (nextIndex < 0) {
         if (reference.length > 0 && reference.length < 32) {
           console.info('[sync] inline branch child fallback', { referenceLen: reference.length });
           pathNibbles.push(branchIndex);
           keyOffset += 1;
-          childOffsets.push(candidateOffset);
           currentNode = reference;
           continue;
         }
@@ -524,22 +572,13 @@ function describeStaticPathProof(nodesHex: readonly string[], rootHash: Hex, key
 
       pathNibbles.push(branchIndex);
       keyOffset += 1;
-      childOffsets.push(candidateOffset);
       currentNode = remaining.splice(nextIndex, 1)[0]!;
     }
 
     throw new Error(`Static path proof exceeds ${STATIC_PATH_NODE_LIMIT} steps`);
   } catch (error) {
     console.info('[sync] keyless static path fallback', { reason: error instanceof Error ? error.message : String(error) });
-    const fallback = orderProofNodesKeyless(nodesHex, rootHash);
-    return {
-      ordered: fallback.ordered,
-      childOffsets: [],
-      nodeLens: fallback.ordered.map((node) => node.length),
-      nodeTypes: [],
-      trieKey: safeTrieKeyFromNibbles([]),
-      leafValue: fallback.leafValue,
-    };
+    return orderProofNodesKeyless(nodesHex, rootHash, key);
   }
 }
 
@@ -648,7 +687,11 @@ function nodeMatchesReference(node: Uint8Array, reference: Uint8Array) {
     }
   }
 
-  return keccak256(node) === bytesToHex(reference);
+  if (reference.length === 32) {
+    return keccak256(node) === bytesToHex(reference);
+  }
+
+  return false;
 }
 
 function nodeReferencesCandidate(node: Uint8Array, candidate: Uint8Array) {
@@ -717,10 +760,29 @@ function findRootNodeIndex(nodes: Uint8Array[], rootHash: Hex) {
   return nodes.length > 0 ? 0 : -1;
 }
 
-function orderProofNodesKeyless(nodesHex: readonly string[], rootHash: Hex) {
-  const remaining = nodesHex.map((nodeHex) => hexToBytes(nodeHex as Hex));
+function orderProofNodesKeyless(nodesHex: readonly (string | Uint8Array)[], rootHash: Hex, key?: Uint8Array): {
+  ordered: Uint8Array[];
+  childOffsets: number[];
+  childLens: number[];
+  pathOffsets: number[];
+  pathLens: number[];
+  branchIndices: number[];
+  nodeLens: number[];
+  nodeTypes: number[];
+  trieKey: Uint8Array;
+  leafValue: Uint8Array;
+} {
+  const remaining = nodesHex.map((node) => (typeof node === 'string' ? hexToBytes(node as Hex) : node));
   const ordered: Uint8Array[] = [];
+  const childOffsets: number[] = [];
+  const childLens: number[] = [];
+  const pathOffsets: number[] = [];
+  const pathLens: number[] = [];
+  const branchIndices: number[] = [];
+  const nodeLens: number[] = [];
+  const nodeTypes: number[] = [];
   const pathNibbles: number[] = [];
+  let keyOffset = 0;
   const rootIndex = findRootNodeIndex(remaining, rootHash);
 
   if (rootIndex < 0) {
@@ -729,20 +791,39 @@ function orderProofNodesKeyless(nodesHex: readonly string[], rootHash: Hex) {
 
   let currentNode = remaining.splice(rootIndex, 1)[0]!;
 
-  for (let step = 0; step < 32; step++) {
+  for (let step = 0; step < STATIC_PATH_NODE_LIMIT; step++) {
     ordered.push(currentNode);
+    nodeLens.push(currentNode.length);
+
     const node = decodeRlpItem(currentNode, 0);
-    const [firstItemOffset, firstItem] = listItemAt(currentNode, node.payloadOffset, 0);
+    const [, firstItem] = listItemAt(currentNode, node.payloadOffset, 0);
     const [secondItemOffset, secondItem] = listItemAt(currentNode, node.payloadOffset, 1);
 
     if (secondItemOffset + secondItem.totalLen === node.totalLen) {
+      nodeTypes.push(1);
+      pathOffsets.push(firstItem.payloadOffset);
+      pathLens.push(firstItem.payloadLen);
+      childOffsets.push(secondItem.payloadOffset);
+      childLens.push(secondItem.payloadLen);
+      branchIndices.push(0);
+
       const compactNibbles = compactPathToNibbles(currentNode, firstItem.payloadOffset, firstItem.payloadLen);
       pathNibbles.push(...compactNibbles);
       const prefix = currentNode[firstItem.payloadOffset]! >> 4;
       const isLeaf = prefix >= 2;
+      const consumed = (prefix % 2 === 1) ? firstItem.payloadLen * 2 - 1 : firstItem.payloadLen * 2 - 2;
+      keyOffset += consumed;
+
       if (isLeaf) {
         return {
           ordered,
+          childOffsets,
+          childLens,
+          pathOffsets,
+          pathLens,
+          branchIndices,
+          nodeLens,
+          nodeTypes,
           trieKey: safeTrieKeyFromNibbles(pathNibbles),
           leafValue: currentNode.slice(secondItem.payloadOffset, secondItem.payloadOffset + secondItem.payloadLen),
         };
@@ -752,20 +833,57 @@ function orderProofNodesKeyless(nodesHex: readonly string[], rootHash: Hex) {
       const nextIndex = remaining.findIndex((candidate) => nodeMatchesReference(candidate, reference));
 
       if (nextIndex < 0) {
+        if (reference.length > 0 && reference.length < 32) {
+          currentNode = reference;
+          continue;
+        }
+
         return {
-          ordered: [...ordered, ...remaining],
+          ordered,
+          childOffsets,
+          childLens,
+          pathOffsets,
+          pathLens,
+          branchIndices,
+          nodeLens,
+          nodeTypes,
           trieKey: safeTrieKeyFromNibbles(pathNibbles),
-          leafValue: new Uint8Array(),
+          leafValue: currentNode.slice(secondItem.payloadOffset, secondItem.payloadOffset + secondItem.payloadLen),
         };
       }
 
       currentNode = remaining.splice(nextIndex, 1)[0]!;
-    } else {
-      let nextIndex = -1;
-      let branchIndex = -1;
+      continue;
+    }
 
+    nodeTypes.push(0);
+    pathOffsets.push(0);
+    pathLens.push(0);
+
+    let nextIndex = -1;
+    let branchIndex = -1;
+
+    // If we have a key, prioritize the child at the key's nibble
+    if (key && keyOffset < 64) {
+      const kIndex = keyNibbleAt(key, keyOffset);
+      const [, kChildItem] = listItemAt(currentNode, node.payloadOffset, kIndex);
+      if (kChildItem.payloadLen > 0) {
+        const reference = currentNode.slice(kChildItem.payloadOffset, kChildItem.payloadOffset + kChildItem.payloadLen);
+        const candidateIndex = remaining.findIndex((candidate) => nodeMatchesReference(candidate, reference));
+        if (candidateIndex >= 0) {
+          nextIndex = candidateIndex;
+          branchIndex = kIndex;
+        } else if (reference.length > 0 && reference.length < 32) {
+          // Inline node
+          branchIndex = kIndex;
+        }
+      }
+    }
+
+    // Fallback to searching all children if key-based lookup failed or no key provided
+    if (branchIndex < 0) {
       for (let index = 0; index < 16; index++) {
-        const [childItemOffset, childItem] = listItemAt(currentNode, node.payloadOffset, index);
+        const [, childItem] = listItemAt(currentNode, node.payloadOffset, index);
         if (childItem.payloadLen === 0) {
           continue;
         }
@@ -776,58 +894,90 @@ function orderProofNodesKeyless(nodesHex: readonly string[], rootHash: Hex) {
           nextIndex = candidateIndex;
           branchIndex = index;
           break;
+        } else if (reference.length > 0 && reference.length < 32) {
+          // Inline node - might be the one
+          branchIndex = index;
+          break;
         }
       }
+    }
 
-      if (nextIndex < 0) {
-        return {
-          ordered: [...ordered, ...remaining],
-          trieKey: safeTrieKeyFromNibbles(pathNibbles),
-          leafValue: new Uint8Array(),
-        };
-      }
+    if (branchIndex < 0 || (nextIndex < 0 && (currentNode.slice(listItemAt(currentNode, node.payloadOffset, branchIndex)[1].payloadOffset, listItemAt(currentNode, node.payloadOffset, branchIndex)[1].payloadOffset + listItemAt(currentNode, node.payloadOffset, branchIndex)[1].payloadLen).length >= 32))) {
+      const [, terminalItem] = listItemAt(currentNode, node.payloadOffset, 16);
+      childOffsets.push(terminalItem.payloadOffset);
+      childLens.push(terminalItem.payloadLen);
+      branchIndices.push(16);
 
-      pathNibbles.push(branchIndex);
+      return {
+        ordered,
+        childOffsets,
+        childLens,
+        pathOffsets,
+        pathLens,
+        branchIndices,
+        nodeLens,
+        nodeTypes,
+        trieKey: safeTrieKeyFromNibbles(pathNibbles),
+        leafValue: currentNode.slice(terminalItem.payloadOffset, terminalItem.payloadOffset + terminalItem.payloadLen),
+      };
+    }
+
+    const [, resolvedChildItem] = listItemAt(currentNode, node.payloadOffset, branchIndex);
+    childOffsets.push(resolvedChildItem.payloadOffset);
+    childLens.push(resolvedChildItem.payloadLen);
+    branchIndices.push(branchIndex);
+    pathNibbles.push(branchIndex);
+    keyOffset += 1;
+
+    if (nextIndex >= 0) {
       currentNode = remaining.splice(nextIndex, 1)[0]!;
+    } else {
+      // Must be an inline node because we checked length above
+      currentNode = currentNode.slice(resolvedChildItem.payloadOffset, resolvedChildItem.payloadOffset + resolvedChildItem.payloadLen);
     }
   }
 
-  return { ordered: [...ordered, ...remaining], trieKey: safeTrieKeyFromNibbles(pathNibbles), leafValue: new Uint8Array() };
+  throw new Error(`Static path proof exceeds ${STATIC_PATH_NODE_LIMIT} steps`);
 }
 
-function inferProofRootHash(nodesHex: readonly string[]) {
-  const nodes = nodesHex.map((nodeHex) => hexToBytes(nodeHex as Hex));
+function inferProofRootHash(nodesHex: readonly (string | Uint8Array)[]) {
+  const nodes = nodesHex.map((node) => (typeof node === 'string' ? hexToBytes(node as Hex) : node));
   const nodeHashes = nodes.map((node) => keccak256(node));
   const incomingCounts = new Map<string, number>(nodeHashes.map((hash) => [hash, 0]));
 
   for (const node of nodes) {
-    const decodedNode = decodeRlpItem(node, 0);
-    const [firstItemOffset, firstItem] = listItemAt(node, decodedNode.payloadOffset, 0);
-    const [secondItemOffset, secondItem] = listItemAt(node, decodedNode.payloadOffset, 1);
+    try {
+      const decodedNode = decodeRlpItem(node, 0);
+      const [, firstItem] = listItemAt(node, decodedNode.payloadOffset, 0);
+      const [secondItemOffset, secondItem] = listItemAt(node, decodedNode.payloadOffset, 1);
 
-    if (secondItemOffset + secondItem.totalLen === decodedNode.totalLen) {
-      if (secondItem.payloadLen > 0) {
-        const reference = node.slice(secondItem.payloadOffset, secondItem.payloadOffset + secondItem.payloadLen);
-        const matchedNode = nodes.find((candidate) => bytesToHex(candidate) === bytesToHex(reference) || keccak256(candidate) === bytesToHex(reference));
-        if (matchedNode) {
-          const matchedHash = keccak256(matchedNode);
-          incomingCounts.set(matchedHash, (incomingCounts.get(matchedHash) ?? 0) + 1);
+      if (secondItemOffset + secondItem.totalLen === decodedNode.totalLen) {
+        if (secondItem.payloadLen > 0) {
+          const reference = node.slice(secondItem.payloadOffset, secondItem.payloadOffset + secondItem.payloadLen);
+          const matchedNode = nodes.find((candidate) => nodeMatchesReference(candidate, reference));
+          if (matchedNode) {
+            const matchedHash = keccak256(matchedNode);
+            incomingCounts.set(matchedHash, (incomingCounts.get(matchedHash) ?? 0) + 1);
+          }
+        }
+      } else {
+        for (let index = 0; index < 16; index++) {
+          const [, childItem] = listItemAt(node, decodedNode.payloadOffset, index);
+          if (childItem.payloadLen === 0) {
+            continue;
+          }
+
+          const reference = node.slice(childItem.payloadOffset, childItem.payloadOffset + childItem.payloadLen);
+          const matchedNode = nodes.find((candidate) => nodeMatchesReference(candidate, reference));
+          if (matchedNode) {
+            const matchedHash = keccak256(matchedNode);
+            incomingCounts.set(matchedHash, (incomingCounts.get(matchedHash) ?? 0) + 1);
+          }
         }
       }
-    } else {
-      for (let index = 0; index < 16; index++) {
-        const [childItemOffset, childItem] = listItemAt(node, decodedNode.payloadOffset, index);
-        if (childItem.payloadLen === 0) {
-          continue;
-        }
-
-        const reference = node.slice(childItem.payloadOffset, childItem.payloadOffset + childItem.payloadLen);
-        const matchedNode = nodes.find((candidate) => bytesToHex(candidate) === bytesToHex(reference) || keccak256(candidate) === bytesToHex(reference));
-        if (matchedNode) {
-          const matchedHash = keccak256(matchedNode);
-          incomingCounts.set(matchedHash, (incomingCounts.get(matchedHash) ?? 0) + 1);
-        }
-      }
+      void firstItem;
+    } catch {
+      continue;
     }
   }
 
@@ -841,15 +991,50 @@ function inferProofRootHash(nodesHex: readonly string[]) {
   return undefined;
 }
 
-function extractStorageRootFromAccountLeaf(leafNode: Uint8Array, recordPayloadOffset: number) {
-  const recordNode = decodeRlpItem(leafNode, recordPayloadOffset);
-  const [, storageRootItem] = listItemAt(leafNode, recordNode.payloadOffset, 2);
-
-  if (storageRootItem.payloadLen !== 32) {
-    throw new Error(`Unexpected storage root length: ${storageRootItem.payloadLen}`);
+function extractAccountLeafFieldHints(leafValue: Uint8Array) {
+  const leafNode = decodeRlpItem(leafValue, 0);
+  
+  // Account leaf is a list of [key, value] where value is RLP-encoded account record [nonce, balance, storageRoot, codeHash]
+  // In some trie formats it might be just the record.
+  
+  let accountRecordPayload: Uint8Array;
+  let accountRecordOffset: number;
+  
+  // Try to see if it is a [key, value] pair (Compact Node)
+  try {
+    const [, firstItem] = listItemAt(leafValue, leafNode.payloadOffset, 0);
+    const [secondItemOffset, secondItem] = listItemAt(leafValue, leafNode.payloadOffset, 1);
+    
+    if (secondItemOffset + secondItem.totalLen === leafNode.totalLen) {
+      // It's a [key, value] pair
+      accountRecordPayload = leafValue.slice(secondItem.payloadOffset, secondItem.payloadOffset + secondItem.payloadLen);
+      accountRecordOffset = 0;
+    } else {
+      // It's likely the record itself
+      accountRecordPayload = leafValue;
+      accountRecordOffset = leafNode.payloadOffset;
+    }
+    void firstItem;
+  } catch {
+    accountRecordPayload = leafValue;
+    accountRecordOffset = leafNode.payloadOffset;
   }
 
-  return leafNode.slice(storageRootItem.payloadOffset, storageRootItem.payloadOffset + 32);
+  const accountRecord = decodeRlpItem(accountRecordPayload, accountRecordOffset);
+  const [, balanceItem] = listItemAt(accountRecordPayload, accountRecord.payloadOffset, 1);
+  const [, storageRootItem] = listItemAt(accountRecordPayload, accountRecord.payloadOffset, 2);
+
+  if (storageRootItem.payloadLen !== 32) {
+    throw new Error(`Unexpected account leaf storage root length: ${storageRootItem.payloadLen}`);
+  }
+
+  return {
+    balanceOffset: balanceItem.payloadOffset + (accountRecordPayload === leafValue ? 0 : listItemAt(leafValue, leafNode.payloadOffset, 1)[0]),
+    balanceLen: balanceItem.payloadLen,
+    storageRootOffset: storageRootItem.payloadOffset + (accountRecordPayload === leafValue ? 0 : listItemAt(leafValue, leafNode.payloadOffset, 1)[0]),
+    storageRootLen: storageRootItem.payloadLen,
+    storageRoot: accountRecordPayload.slice(storageRootItem.payloadOffset, storageRootItem.payloadOffset + storageRootItem.payloadLen),
+  };
 }
 
 async function getUserFeaturesAndSignature(
@@ -914,16 +1099,6 @@ async function getUserFeaturesAndSignature(
   };
 }
 
-export async function requestScoreSubmission(params: SubmitScoreRequest) {
-  const proofData = await postBackendJson<{ txHash: Hex }>('/api/submit-score', {
-    userAddress: getAddress(params.userAddress),
-    score: Math.max(0, Math.floor(params.score)),
-    scoreRegistryAddress: getAddress(params.scoreRegistryAddress),
-  });
-
-  return proofData;
-}
-
 export async function buildLoanProofInputs(params: LoanProofParams): Promise<LoanProofInputs> {
   const chainId = params.chainId ?? 1;
   const validatedUserAddress = getAddress(params.userAddress);
@@ -945,7 +1120,8 @@ export async function buildLoanProofInputs(params: LoanProofParams): Promise<Loa
     storageProof: storageProof.length,
   });
 
-  const inferredStateRoot = inferProofRootHash(accountProof) ?? (stateRoot as Hex);
+  const recoveredStateRoot = inferProofRootHash(accountProof);
+  const inferredStateRoot = resolveTrieRoot(stateRoot as Hex | undefined, recoveredStateRoot);
   console.info('[sync] state root inferred:', inferredStateRoot);
 
   // Account proof must match the Aave pool account proven by the backend.
@@ -961,58 +1137,141 @@ export async function buildLoanProofInputs(params: LoanProofParams): Promise<Loa
     nodeLens: accountPath.nodeLens,
     nodeTypes: accountPath.nodeTypes,
   });
-  let accountLeafStorageRootHex: Hex | undefined;
+
+  const accountNodes = packStaticPathNodes(accountPath.ordered);
+  const accountNodeLens = packStaticPathScalars(accountPath.nodeLens).map((value) => Number(value));
+  const accountNodeTypes = packStaticPathScalars(accountPath.nodeTypes).map((value) => Number(value));
+  const accountPathOffsets = packStaticPathScalars(accountPath.pathOffsets).map((value) => Number(value));
+  const accountPathLens = packStaticPathScalars(accountPath.pathLens).map((value) => Number(value));
+  const accountValueOffsets = packStaticPathScalars(accountPath.childOffsets).map((value) => Number(value));
+  const accountValueLens = packStaticPathScalars(accountPath.childLens).map((value) => Number(value));
+  const accountBranchIndices = packStaticPathScalars(accountPath.branchIndices).map((value) => Number(value));
+  const accountRealSteps = Number(accountPath.ordered.length);
+
+  let accountLeafStorageRoot: Hex | undefined;
+  let accountBalanceOffset = 0;
+  let accountBalanceLen = 0;
+  let accountStorageRootOffset = 0;
+  let accountStorageRootLen = 0;
 
   try {
-    const lastAccountNode = accountPath.ordered[accountPath.ordered.length - 1]!;
-    const [, accountRecordItem] = listItemAt(lastAccountNode, rlpHeaderLength(lastAccountNode[0]!), 1);
-    accountLeafStorageRootHex = bytesToHex(extractStorageRootFromAccountLeaf(lastAccountNode, accountRecordItem.payloadOffset)) as Hex;
-    console.info('[sync] account leaf storage root', accountLeafStorageRootHex);
+    const accountLeaf = accountPath.ordered[accountPath.ordered.length - 1]!;
+    const accountLeafFields = extractAccountLeafFieldHints(accountLeaf);
+    accountBalanceOffset = accountLeafFields.balanceOffset;
+    accountBalanceLen = accountLeafFields.balanceLen;
+    accountStorageRootOffset = accountLeafFields.storageRootOffset;
+    accountStorageRootLen = accountLeafFields.storageRootLen;
+    accountLeafStorageRoot = bytesToHex(accountLeafFields.storageRoot) as Hex;
+    console.info('[sync] account leaf storage root', accountLeafStorageRoot);
   } catch (error) {
     console.info('[sync] account leaf storage root fallback', { reason: error instanceof Error ? error.message : String(error) });
   }
-  const accountNodes = packStaticPathNodes(accountPath.ordered);
-  const accountNodeLens = packStaticPathScalars(accountPath.nodeLens).map((value) => Number(value));
-  const accountRealSteps = Number(accountPath.ordered.length);
+
   const storageProofKeyHex = storageProofKey as Hex;
+  const recoveredStorageRoot = inferProofRootHash(storageProof);
+  const resolvedStorageRoot = resolveTrieRoot(accountLeafStorageRoot, recoveredStorageRoot ?? (storageHash as Hex));
   const storageTrieKeyHex = keccak256(hexToBytes(storageProofKeyHex));
+  const storageKeyBytes = hexToBytes(storageTrieKeyHex);
 
   console.info('[sync] describe storage path');
-  const inferredStorageRoot = resolveTrieRoot(accountLeafStorageRootHex, inferProofRootHash(storageProof) ?? (storageHash as Hex));
-  console.info('[sync] storage root inferred:', inferredStorageRoot);
-  const storagePath = describeStaticPathProof(storageProof, inferredStorageRoot, hexToBytes(storageTrieKeyHex));
+  console.info('[sync] storage root resolved:', resolvedStorageRoot);
+  const storagePath = describeStaticPathProof(storageProof, resolvedStorageRoot, storageKeyBytes);
   console.info('[sync] storage path described', {
     ordered: storagePath.ordered.length,
     nodeLens: storagePath.nodeLens,
     nodeTypes: storagePath.nodeTypes,
   });
+
   const storageNodes = packStaticPathNodes(storagePath.ordered);
   const storageNodeLens = packStaticPathScalars(storagePath.nodeLens).map((value) => Number(value));
+  const storageNodeTypes = packStaticPathScalars(storagePath.nodeTypes).map((value) => Number(value));
+  const storagePathOffsets = packStaticPathScalars(storagePath.pathOffsets).map((value) => Number(value));
+  const storagePathLens = packStaticPathScalars(storagePath.pathLens).map((value) => Number(value));
+  const storageValueOffsets = packStaticPathScalars(storagePath.childOffsets).map((value) => Number(value));
+  const storageValueLens = packStaticPathScalars(storagePath.childLens).map((value) => Number(value));
+  const storageBranchIndices = packStaticPathScalars(storagePath.branchIndices).map((value) => Number(value));
+  const storageValueOffset = Number(storagePath.childOffsets[storagePath.childOffsets.length - 1] ?? 0);
+  const storageValueLen = Number(storagePath.childLens[storagePath.childLens.length - 1] ?? 0);
   const storageRealSteps = Number(storagePath.ordered.length);
+
+  const storageLeaf = storagePath.ordered[storagePath.ordered.length - 1] ?? new Uint8Array();
+  const storageWord = new Uint8Array(32);
+
+  const bitAtWord = (word: Uint8Array, bitIndex: number) => {
+    const byteIndex = 31 - Math.floor(bitIndex / 8);
+    const bitIndexInByte = bitIndex % 8;
+    return ((word[byteIndex] ?? 0) >> bitIndexInByte) & 1;
+  };
+
+  const computeSolventFromWord = (word: Uint8Array) => {
+    let hasCollateral = false;
+    let hasDebt = false;
+
+    for (let index = 0; index < 128; index++) {
+      if (bitAtWord(word, index * 2 + 1) === 1) {
+        hasCollateral = true;
+      }
+      if (bitAtWord(word, index * 2) === 1) {
+        hasDebt = true;
+      }
+    }
+
+    return hasCollateral && !hasDebt;
+  };
+
+  if (storageValueLen !== 0) {
+    const start = 32 - storageValueLen;
+
+    for (let index = 0; index < 32; index++) {
+      if (index >= start) {
+        storageWord[index] = storageLeaf[storageValueOffset + index - start] ?? 0;
+      }
+    }
+  }
+
+  const proofIsSolvent = computeSolventFromWord(storageWord);
   const score = predictedScore;
-  const publicCommitment = await computePublicCommitment(inferredStateRoot, isSolvent, score);
-  const expectedPublicCommitment = await computePublicCommitment(inferredStateRoot, isSolvent, score);
+  const publicCommitment = await computePublicCommitment(inferredStateRoot, proofIsSolvent, score);
+  const expectedPublicCommitment = await computePublicCommitment(inferredStateRoot, proofIsSolvent, score);
 
   if (publicCommitment.toLowerCase() !== expectedPublicCommitment.toLowerCase()) {
     throw new Error('Public commitment mismatch for inferred state root.');
   }
 
   const repaymentRate = Number(score) * 10000;
-  const storageProofKeyNibbles = expandToNibbles(hexToBytes(storageTrieKeyHex));
+  const storageProofKeyNibbles = expandToNibbles(storageKeyBytes);
 
   const inputs: LoanProofInputs = {
     state_root: Array.from(hexToBytes(inferredStateRoot)),
     public_commitment: publicCommitment,
     account_nodes: accountNodes,
     account_lens: accountNodeLens,
+    account_node_types: accountNodeTypes,
+    account_path_offsets: accountPathOffsets,
+    account_path_lens: accountPathLens,
+    account_value_offsets: accountValueOffsets,
+    account_value_lens: accountValueLens,
+    account_branch_indices: accountBranchIndices,
+    account_balance_offset: accountBalanceOffset,
+    account_balance_len: accountBalanceLen,
+    account_storage_root_offset: accountStorageRootOffset,
+    account_storage_root_len: accountStorageRootLen,
     account_steps: accountRealSteps,
     account_key: accountTrieKeyNibbles,
     storage_nodes: storageNodes,
     storage_lens: storageNodeLens,
+    storage_node_types: storageNodeTypes,
+    storage_path_offsets: storagePathOffsets,
+    storage_path_lens: storagePathLens,
+    storage_value_offsets: storageValueOffsets,
+    storage_value_lens: storageValueLens,
+    storage_branch_indices: storageBranchIndices,
+    storage_value_offset: storageValueOffset,
+    storage_value_len: storageValueLen,
     storage_steps: storageRealSteps,
     storage_key: storageProofKeyNibbles,
     repayment_rate: repaymentRate,
-    is_solvent: isSolvent,
+    is_solvent: proofIsSolvent,
     credit_score: score,
     metadata: {
       nonce: params.nonce,
@@ -1024,11 +1283,11 @@ export async function buildLoanProofInputs(params: LoanProofParams): Promise<Loa
       stateRoot: inferredStateRoot,
       publicCommitment,
       accountTrieKey: accountTrieKeyHex,
-      storageRoot: inferredStorageRoot,
+      storageRoot: resolvedStorageRoot,
       storageProofKey: storageProofKeyHex,
       repaymentRate,
       score,
-      isSolvent,
+      isSolvent: proofIsSolvent,
     },
   };
 

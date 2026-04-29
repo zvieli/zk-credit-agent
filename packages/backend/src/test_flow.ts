@@ -196,8 +196,8 @@ async function main() {
     const rpcUrl = process.env.RPC_URL || 'http://127.0.0.1:8545';
     const proofRpcUrl =
         process.env.PROOF_RPC_URL ||
-        process.env.MAINNET_RPC_URL ||
-        (process.env.ALCHEMY_API_KEY ? `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : rpcUrl);
+        process.env.anvil_RPC_URL ||
+        (process.env.ALCHEMY_API_KEY ? `https://eth-anvil.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : rpcUrl);
     const transport = http(rpcUrl, {
         timeout: 300000,
     });

@@ -97,10 +97,6 @@ function resolveProofRpcUrl(explicitRpcUrl?: string) {
     return process.env.RPC_URL;
   }
 
-  if (process.env.ALCHEMY_API_KEY) {
-    return `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`;
-  }
-
   return 'http://127.0.0.1:8545';
 }
 
@@ -338,3 +334,4 @@ const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
     isSolvent: userConfigState.isSolvent,
   };
 }
+

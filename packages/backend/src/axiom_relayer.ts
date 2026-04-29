@@ -67,9 +67,15 @@ function sleep(ms: number) {
 export async function startAxiomRelayer(config: Partial<AxiomRelayerConfig> = {}) {
   const deployment = readFrontendDeploymentConfig();
   const rpcUrl = config.rpcUrl || resolveRpcUrl();
-  const chainId = config.chainId ?? Number(process.env.CHAIN_ID ?? deployment.chainId ?? 1);
+  const chainId = mainnet.id;
   const publicClient = createPublicClient({
-    chain: mainnet,
+    chain: {
+      ...mainnet,
+      rpcUrls: {
+        default: { http: [rpcUrl] },
+        public: { http: [rpcUrl] },
+      },
+    },
     transport: http(rpcUrl, { timeout: 300000 }),
   });
 
@@ -80,7 +86,7 @@ export async function startAxiomRelayer(config: Partial<AxiomRelayerConfig> = {}
 
   const callbackTarget = getAddress(callbackTargetRaw);
   const caller = getAddress(config.caller || process.env.AXIOM_CALLBACK_CALLER || callbackTarget);
-  const sourceChainId = BigInt(config.sourceChainId ?? process.env.AXIOM_SOURCE_CHAIN_ID ?? chainId);
+  const sourceChainId = BigInt(chainId);
   const querySchema = config.querySchema || (process.env.AXIOM_QUERY_SCHEMA as Hex | undefined) || ('0x' + '00'.repeat(32)) as Hex;
   const axiomV2QueryAddress = getAddress(config.axiomV2QueryAddress || process.env.AXIOM_V2_QUERY_ADDRESS || deployment.axiomV2QueryAddress || getAxiomV2QueryAddress(String(chainId)));
   let lastScannedBlock: bigint = config.startBlock ?? 0n;

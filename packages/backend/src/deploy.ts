@@ -1,5 +1,5 @@
 import { createWalletClient, createPublicClient, http, getAddress, type Hex } from 'viem';
-import { mainnet, sepolia } from 'viem/chains';
+import { mainnet } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
@@ -43,16 +43,33 @@ async function main() {
 
   const account = privateKeyToAccount(privateKey);
   const rpcUrl = process.env.RPC_URL || 'http://127.0.0.1:8545';
-  const chain = rpcUrl.includes('sepolia') ? sepolia : mainnet;
+  
+  const anvil = {
+    ...mainnet,
+    id: 31337,
+  };
+  const chain = rpcUrl.includes('127.0.0.1') || rpcUrl.includes('localhost') ? anvil : mainnet;
 
   const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
   const walletClient = createWalletClient({ account, chain, transport: http(rpcUrl) });
+
+  if (rpcUrl.includes('127.0.0.1') || rpcUrl.includes('localhost')) {
+    await publicClient.request({
+      method: 'anvil_setBalance',
+      params: [account.address, '0x3635c9adc5dea00000'], // 1000 ETH
+    } as any);
+    console.log(`Funded deployment account for local testing: ${account.address}`);
+  }
 
   console.log(`Starting deployment from: ${account.address}`);
 
   console.log('Deploying ZKTranscriptLib...');
   const libArtifact = loadTranscriptLibArtifact();
-  const libHash = await walletClient.deployContract({ abi: libArtifact.abi, bytecode: libArtifact.bytecode.object });
+  const libHash = await walletClient.deployContract({ 
+    abi: libArtifact.abi, 
+    bytecode: libArtifact.bytecode.object,
+    gas: 30_000_000n,
+  });
   const libAddress = (await publicClient.waitForTransactionReceipt({ hash: libHash })).contractAddress!;
   console.log(`ZKTranscriptLib: ${libAddress}`);
 
@@ -62,12 +79,17 @@ async function main() {
   const combinedHash = await walletClient.deployContract({
     abi: combinedVerifierArtifact.abi,
     bytecode: linkLibrary(combinedVerifierArtifact.bytecode.object, libAddress) as Hex,
+    gas: 30_000_000n,
   });
   const combinedVerifierAddr = (await publicClient.waitForTransactionReceipt({ hash: combinedHash })).contractAddress!;
 
   console.log('Deploying ScoreRegistry...');
   const registryArtifact = JSON.parse(readFileSync(join(CONTRACTS_OUT, 'ScoreRegistry.sol/ScoreRegistry.json'), 'utf-8'));
-  const regHash = await walletClient.deployContract({ abi: registryArtifact.abi, bytecode: registryArtifact.bytecode.object });
+  const regHash = await walletClient.deployContract({ 
+    abi: registryArtifact.abi, 
+    bytecode: registryArtifact.bytecode.object,
+    gas: 10_000_000n,
+  });
   const registryAddr = (await publicClient.waitForTransactionReceipt({ hash: regHash })).contractAddress!;
 
   console.log('Deploying CreditPolicy...');
@@ -78,6 +100,7 @@ async function main() {
     abi: policyArtifact.abi,
     bytecode: policyArtifact.bytecode.object,
     args: [axiomAddress, combinedVerifierAddr],
+    gas: 10_000_000n,
   });
   const policyAddr = (await publicClient.waitForTransactionReceipt({ hash: policyHash })).contractAddress!;
 

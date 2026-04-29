@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import dotenv from 'dotenv';
 import { createPublicClient, createWalletClient, decodeEventLog, encodeAbiParameters, getAddress, http, parseEventLogs, parseAbiParameters, type Chain } from 'viem';
-import { anvil, mainnet } from 'viem/chains';
+import { mainnet } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import { buildSendQuery, getAxiomV2QueryAddress } from '@axiom-crypto/client';
 import { DataSubqueryType, HeaderField } from '@axiom-crypto/tools';
@@ -22,6 +22,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 type Hex = `0x${string}`;
 
 const OFFICIAL_MAINNET_AXIOM_V2_QUERY_ADDRESS = '0x386121D50d8591873C8b8b15d666E3A3705978f8' as Hex;
+const MAINNET_CHAIN_ID = 1;
 
 type DeploymentConfig = {
   chainId?: number;
@@ -146,14 +147,6 @@ function resolveProofRpcUrl(explicitRpcUrl?: string) {
     return process.env.PROOF_RPC_URL;
   }
 
-  if (process.env.MAINNET_RPC_URL) {
-    return process.env.MAINNET_RPC_URL;
-  }
-
-  if (process.env.ALCHEMY_API_KEY) {
-    return `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`;
-  }
-
   const deployment = readDeploymentConfig();
   if (deployment.proofRpcUrl) {
     return deployment.proofRpcUrl;
@@ -162,8 +155,10 @@ function resolveProofRpcUrl(explicitRpcUrl?: string) {
   return resolveTransactionRpcUrl();
 }
 
-function resolveChainId(explicitChainId?: number) {
-  return explicitChainId ?? Number(process.env.CHAIN_ID ?? readDeploymentConfig().chainId ?? anvil.id);
+function resolveChainId(_explicitChainId?: number) {
+  if (_explicitChainId) return _explicitChainId;
+  const deployment = readDeploymentConfig();
+  return deployment.chainId ?? 31337;
 }
 
 function resolveAgentPrivateKey() {
@@ -195,10 +190,6 @@ function resolveAxiomV2QueryAddress(chainId: number, explicitAddress?: string) {
     return getAddress(resolvedAddress) as Hex;
   }
 
-  if (chainId === 1) {
-    return getAddress(OFFICIAL_MAINNET_AXIOM_V2_QUERY_ADDRESS) as Hex;
-  }
-
   return getAddress(getAxiomV2QueryAddress(String(chainId))) as Hex;
 }
 
@@ -206,9 +197,8 @@ function resolveRpcChain(chainId: number): Chain {
   const rpcUrl = process.env.ANVIL_RPC_URL ?? process.env.RPC_URL ?? 'http://127.0.0.1:8545';
 
   return {
-    ...anvil,
+    ...mainnet,
     id: chainId,
-    name: chainId === anvil.id ? 'anvil-localhost' : 'localhost-fork',
     rpcUrls: {
       default: { http: [rpcUrl] },
       public: { http: [rpcUrl] },
@@ -252,7 +242,7 @@ export async function buildAndSendAxiomStateRootQuery(input: {
 }) {
   const axiomV2QueryAddress = input.axiomV2QueryAddress ?? getAxiomV2QueryAddress(String(input.chainId));
   const sendQueryArgs = await buildSendQuery({
-    chainId: String(input.chainId),
+    chainId: "1", // Data source is Mainnet
     rpcUrl: input.rpcUrl,
     axiomV2QueryAddress,
     dataQuery: input.dataQuery,
@@ -301,7 +291,7 @@ export async function requestAxiomRoot(params: RequestAxiomRootParams): Promise<
   });
 
   const sendQueryArgs = await buildSendQuery({
-    chainId: String(chainId),
+    chainId: "1", // Data source is Mainnet (Axiom contract requirement)
     rpcUrl: proofRpcUrl,
     axiomV2QueryAddress,
     dataQuery: buildHeaderStateRootQuery(params.blockNumber) as unknown as any[],
@@ -414,12 +404,10 @@ export async function readVerifiedRoot(params: {
   const chainId = resolveChainId(params.chainId);
   const rpcUrl = resolveProofRpcUrl(params.rpcUrl);
   const publicClient = createPublicClient({
-    chain: mainnet,
+    chain: resolveRpcChain(chainId),
     transport: http(rpcUrl, { timeout: 300000 }),
   });
   const creditPolicyAddress = resolveCreditPolicyAddress(params.creditPolicyAddress);
-
-  void chainId;
 
   const stateRoot = (await publicClient.readContract({
     address: creditPolicyAddress,
