@@ -395,6 +395,46 @@ export async function requestAxiomRoot(params: RequestAxiomRootParams): Promise<
   };
 }
 
+export async function prepareAxiomRequestArgs(params: RequestAxiomRootParams) {
+  const chainId = resolveChainId(params.chainId);
+  const proofRpcUrl = resolveProofRpcUrl();
+  const creditPolicyAddress = resolveCreditPolicyAddress(params.creditPolicyAddress);
+  const axiomV2QueryAddress = resolveAxiomV2QueryAddress(chainId, params.axiomV2QueryAddress);
+
+  const sendQueryArgs = await buildSendQuery({
+    chainId: "1",
+    rpcUrl: proofRpcUrl,
+    axiomV2QueryAddress,
+    dataQuery: buildHeaderStateRootQuery(params.blockNumber) as unknown as any[],
+    computeQuery: {
+      k: 0,
+      resultLen: 1,
+      vkey: [],
+      computeProof: '0x00',
+    },
+    callback: {
+      target: creditPolicyAddress,
+      extraData: encodeAxiomStateRootCallbackData(params.blockNumber),
+    },
+    caller: creditPolicyAddress, // The Relayer contract will be the caller
+    mock: false,
+    options: {},
+  });
+
+  return {
+    sourceChainId: sendQueryArgs.args[0],
+    dataQueryHash: sendQueryArgs.args[1],
+    computeQuery: sendQueryArgs.args[2],
+    callback: sendQueryArgs.args[3],
+    feeData: sendQueryArgs.args[4],
+    userSalt: sendQueryArgs.args[5],
+    refundee: sendQueryArgs.args[6],
+    dataQuery: sendQueryArgs.args[7],
+    axiomV2QueryAddress: sendQueryArgs.address,
+    value: sendQueryArgs.value,
+  };
+}
+
 export async function readVerifiedRoot(params: {
   blockNumber: bigint;
   creditPolicyAddress?: string | undefined;

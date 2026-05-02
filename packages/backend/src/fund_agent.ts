@@ -23,7 +23,7 @@ async function main() {
     console.log(`Funding account: ${account.address}`);
     await testClient.setBalance({
         address: account.address,
-        value: parseEther('1000'),
+        value: parseEther('0.5'),
     });
     console.log('Account funded!');
 }

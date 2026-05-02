@@ -12,7 +12,6 @@ dotenv.config({ path: resolve(__dirname, '../.env') });
 const CONTRACTS_OUT = resolve(__dirname, '../../contracts/out');
 const FRONTEND_PUBLIC_ROOT = resolve(__dirname, '../../frontend/public');
 const DEPLOYMENT_JSON_PATH = join(FRONTEND_PUBLIC_ROOT, 'deployment.json');
-const LOCAL_DEV_FUND_WEI = '0x3635c9adc5dea00000';
 const TRANSCRIPT_LIB_ARTIFACT_CANDIDATES = [
   join(CONTRACTS_OUT, 'combined_verifier.sol/ZKTranscriptLib.json'),
   join(CONTRACTS_OUT, 'account_verifier.sol/ZKTranscriptLib.json'),
@@ -56,9 +55,9 @@ async function main() {
   if (rpcUrl.includes('127.0.0.1') || rpcUrl.includes('localhost')) {
     await publicClient.request({
       method: 'anvil_setBalance',
-      params: [account.address, '0x3635c9adc5dea00000'], // 1000 ETH
+      params: [account.address, '0x16345785d8a0000'], // 0.1 ETH
     } as any);
-    console.log(`Funded deployment account for local testing: ${account.address}`);
+    console.log(`Funded deployment account for local testing: ${account.address} with 0.1 ETH`);
   }
 
   console.log(`Starting deployment from: ${account.address}`);
@@ -68,7 +67,6 @@ async function main() {
   const libHash = await walletClient.deployContract({ 
     abi: libArtifact.abi, 
     bytecode: libArtifact.bytecode.object,
-    gas: 30_000_000n,
   });
   const libAddress = (await publicClient.waitForTransactionReceipt({ hash: libHash })).contractAddress!;
   console.log(`ZKTranscriptLib: ${libAddress}`);
@@ -79,7 +77,6 @@ async function main() {
   const combinedHash = await walletClient.deployContract({
     abi: combinedVerifierArtifact.abi,
     bytecode: linkLibrary(combinedVerifierArtifact.bytecode.object, libAddress) as Hex,
-    gas: 30_000_000n,
   });
   const combinedVerifierAddr = (await publicClient.waitForTransactionReceipt({ hash: combinedHash })).contractAddress!;
 
@@ -88,32 +85,48 @@ async function main() {
   const regHash = await walletClient.deployContract({ 
     abi: registryArtifact.abi, 
     bytecode: registryArtifact.bytecode.object,
-    gas: 10_000_000n,
   });
   const registryAddr = (await publicClient.waitForTransactionReceipt({ hash: regHash })).contractAddress!;
 
-  console.log('Deploying CreditPolicy...');
-  const policyArtifact = JSON.parse(readFileSync(join(CONTRACTS_OUT, 'CreditPolicy.sol/CreditPolicy.json'), 'utf-8'));
+  console.log('Deploying AxiomV3Relayer...');
+  const relayerArtifact = JSON.parse(readFileSync(join(CONTRACTS_OUT, 'AxiomV3Relayer.sol/AxiomV3Relayer.json'), 'utf-8'));
   const axiomAddress = getAddress(process.env.AXIOM_V2_QUERY_ADDRESS || '0x386121D50d8591873C8b8b15d666E3A3705978f8');
-
-  const policyHash = await walletClient.deployContract({
-    abi: policyArtifact.abi,
-    bytecode: policyArtifact.bytecode.object,
-    args: [axiomAddress, combinedVerifierAddr],
-    gas: 10_000_000n,
+  const relayerHash = await walletClient.deployContract({
+    abi: relayerArtifact.abi,
+    bytecode: relayerArtifact.bytecode.object,
+    args: [axiomAddress, "0x0000000000000000000000000000000000000000"],
   });
-  const policyAddr = (await publicClient.waitForTransactionReceipt({ hash: policyHash })).contractAddress!;
+  const relayerAddr = (await publicClient.waitForTransactionReceipt({ hash: relayerHash })).contractAddress!;
 
-  if (rpcUrl.includes('127.0.0.1') || rpcUrl.includes('localhost')) {
-    await publicClient.request({
-      method: 'anvil_setBalance',
-      params: [policyAddr, LOCAL_DEV_FUND_WEI],
-    } as any);
-    console.log(`Funded CreditPolicy for local testing: ${policyAddr}`);
-  }
+  console.log('Deploying CreditVerifier...');
+  const verifierArtifact = JSON.parse(readFileSync(join(CONTRACTS_OUT, 'CreditVerifier.sol/CreditVerifier.json'), 'utf-8'));
+  const verifierHash = await walletClient.deployContract({
+    abi: verifierArtifact.abi,
+    bytecode: verifierArtifact.bytecode.object,
+    args: [relayerAddr, registryAddr, combinedVerifierAddr],
+  });
+  const verifierAddr = (await publicClient.waitForTransactionReceipt({ hash: verifierHash })).contractAddress!;
 
-  console.log('\nDeployment Complete');
-  console.log(`CREDIT_POLICY_ADDRESS=${policyAddr}`);
+  console.log('Configuring Relayer and Registry...');
+  const setVerifierHash = await walletClient.writeContract({
+    address: relayerAddr,
+    abi: relayerArtifact.abi,
+    functionName: 'setCreditVerifier',
+    args: [verifierAddr],
+  });
+  await publicClient.waitForTransactionReceipt({ hash: setVerifierHash });
+
+  const setAuthHash = await walletClient.writeContract({
+    address: registryAddr,
+    abi: registryArtifact.abi,
+    functionName: 'setAuthorized',
+    args: [verifierAddr, true],
+  });
+  await publicClient.waitForTransactionReceipt({ hash: setAuthHash });
+
+  console.log('\nDeployment Complete. System is waiting for the first User Deposit to become operational.');
+  console.log(`AXIOM_V3_RELAYER_ADDRESS=${relayerAddr}`);
+  console.log(`CREDIT_VERIFIER_ADDRESS=${verifierAddr}`);
   console.log(`SCORE_REGISTRY_ADDRESS=${registryAddr}`);
   console.log(`COMBINED_VERIFIER_ADDRESS=${combinedVerifierAddr}`);
 
@@ -124,7 +137,9 @@ async function main() {
       {
         chainId: chain.id,
         rpcUrl,
-        creditPolicyAddress: policyAddr,
+        creditPolicyAddress: relayerAddr, // Used as callback target
+        axiomV3RelayerAddress: relayerAddr,
+        creditVerifierAddress: verifierAddr,
         scoreRegistryAddress: registryAddr,
         combinedVerifierAddress: combinedVerifierAddr,
         axiomV2QueryAddress: axiomAddress,

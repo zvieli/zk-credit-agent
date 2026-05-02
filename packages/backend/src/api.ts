@@ -6,7 +6,7 @@ import { mainnet } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import { initBackendEnv } from './env.ts';
 import { getUserFeaturesAndSignature } from './index.ts';
-import { generateProof as generateBackendProof, generateLoanProof, requestAxiomRoot, resolveCreditPolicyAddress as resolveConfiguredCreditPolicyAddress } from './axiom_service.ts';
+import { generateProof as generateBackendProof, generateLoanProof, requestAxiomRoot, prepareAxiomRequestArgs, resolveCreditPolicyAddress as resolveConfiguredCreditPolicyAddress } from './axiom_service.ts';
 import { startAxiomRelayer } from './axiom_relayer.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -274,7 +274,9 @@ async function handleRequestAxiomRoot(body: RequestAxiomRootRequest, response: S
     const deployment = (await import('./env.ts')).readFrontendDeploymentConfig();
     const chainId = body.chainId ?? deployment.chainId ?? 31337;
     const creditPolicyAddress = resolveConfiguredCreditPolicyAddress(body.creditPolicyAddress);
-    const result = await requestAxiomRoot({
+    
+    // REPURPOSED: Prepare args for frontend to call AxiomV3Relayer.request
+    const result = await prepareAxiomRequestArgs({
       userAddress: tryGetAddress(body.userAddress, 'userAddress'),
       blockNumber,
       chainId,
@@ -285,8 +287,7 @@ async function handleRequestAxiomRoot(body: RequestAxiomRootRequest, response: S
 
     sendJson(response, 200, {
       ...result,
-      queryId: result.queryId.toString(),
-      blockNumber: result.blockNumber.toString(),
+      blockNumber: blockNumber.toString(),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to request Axiom root.';
