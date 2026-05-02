@@ -1,17 +1,39 @@
-
-# Docs
-docs/
-
-# Dotenv file
-.env
-packages/backend/node_modules
-packages/backend/package-lock.json
+# Node modules
+**/node_modules/
 package-lock.json
-node_modules
-packages/backend/.instructions.md
-packages/frontend/node_modules
-packages/frontend/package-lock.json
-packages/frontend/dist
+
+# Environment files
+**/.env
+**/.env.local
+**/.env.*
+
+# Foundry artifacts
+packages/contracts/lib/
+packages/contracts/out/
+packages/contracts/cache/
+!packages/contracts/broadcast
+packages/contracts/broadcast/*/1/
+packages/contracts/broadcast/**/dry-run/
+packages/contracts/docs/
+packages/contracts/test/data
+
+# Noir/Circuit build files
+packages/circuit/target/
+packages/circuit/proofs/
+packages/circuit/combined/target/
+packages/circuit/combined/Prover.toml
+
+# Frontend build artifacts
+packages/frontend/dist/
+packages/frontend/public/deployment.json
+
+# VS Code
+.vscode/
+
+# Misc
+find_error.js
+.DS_Store
 .github
 .vscode
-packages/frontend/.chromium-libs
+docs
+packages/backend/.instructions.md
