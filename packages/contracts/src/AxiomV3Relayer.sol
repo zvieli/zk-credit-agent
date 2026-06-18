@@ -37,6 +37,7 @@ interface IAxiomV2Query {
 
 interface ICreditVerifier {
     function deposit(address user, uint256 blockNumber) external payable;
+    function depositAxiomFee(address user, uint256 blockNumber, uint256 amount) external returns (uint256);
 }
 
 contract AxiomV3Relayer is AxiomV2Client {
@@ -58,36 +59,38 @@ contract AxiomV3Relayer is AxiomV2Client {
         creditVerifier = _creditVerifier;
     }
 
+    receive() external payable {}
+
     function setCreditVerifier(address _creditVerifier) external {
         // In a real protocol, this would be restricted to an admin/owner
         creditVerifier = _creditVerifier;
-    }
-
-    function debugSetRoot(uint256 b, bytes32 r) external {
-        verifiedRoots[b] = r;
     }
 
     function request(
         uint64 sourceChainId,
         bytes32 dataQueryHash,
         AxiomV2ComputeQuery calldata computeQuery,
+        address user,
         uint256 blockNumber,
         AxiomV2FeeData calldata feeData,
         bytes32 userSalt,
         address refundee,
-        bytes calldata dataQuery
+        bytes calldata dataQuery,
+        uint256 pullAmount
     ) external payable returns (uint256 queryId) {
         uint256 depositRequired = 0.02 ether;
-        require(msg.value >= depositRequired + 0.01 ether, "insufficient gas deposit");
-        
-        uint256 axiomValue = msg.value - depositRequired;
+        require(msg.value == 0, "use escrow funding");
+        require(pullAmount >= depositRequired + 0.01 ether, "insufficient gas deposit");
+
+        uint256 escrowedValue = ICreditVerifier(creditVerifier).depositAxiomFee(user, blockNumber, pullAmount);
+        uint256 axiomValue = escrowedValue - depositRequired;
 
         uint256 nonce = nextNonce++;
         queryId = IAxiomV2Query(axiomV2QueryAddress).sendQuery{value: axiomValue}(
             sourceChainId,
             dataQueryHash,
             computeQuery,
-            AxiomV2Callback(address(this), abi.encode(msg.sender, blockNumber, nonce)),
+            AxiomV2Callback(address(this), abi.encode(user, blockNumber, nonce)),
             feeData,
             userSalt,
             refundee,
@@ -95,11 +98,11 @@ contract AxiomV3Relayer is AxiomV2Client {
         );
         
         nonceToQueryId[nonce] = queryId;
-        queryToUser[queryId] = msg.sender;
+        queryToUser[queryId] = user;
         queryToBlock[queryId] = blockNumber;
         deposits[queryId] = depositRequired;
 
-        emit QueryRequested(queryId, msg.sender, blockNumber);
+        emit QueryRequested(queryId, user, blockNumber);
     }
 
     function _axiomV2Callback(

@@ -91,20 +91,23 @@ contract ZK_Debug is Test {
         fixture.score = uint32(json.readUint(".scoreInputs.metadata.score"));
         fixture.isSolvent = json.readBool(".scoreInputs.metadata.isSolvent");
 
-        // 1. User requests via relayer
+        // 1. User funds escrow, then requests via relayer
         vm.deal(fixture.user, 1 ether);
         vm.prank(fixture.user);
-        // Simplified model: Agent takes flat 0.02 ETH. rest goes to Axiom.
-        // Total = 0.01 (axiom fee) + 0.02 (deposit) = 0.03
-        relayer.request{value: 0.03 ether}(
+        verifier.deposit{value: 0.03 ether}(fixture.user, fixture.blockNumber);
+
+        vm.prank(fixture.user);
+        relayer.request{value: 0}(
             uint64(fixture.chainId),
             bytes32(0),
             AxiomV2ComputeQuery(0, 0, new bytes32[](0), ""),
+            fixture.user,
             fixture.blockNumber,
             AxiomV2FeeData(0, 0, 0),
             bytes32(0),
             fixture.user,
-            ""
+            "",
+            0.03 ether
         );
 
         // 2. Mock Axiom callback triggered by agent

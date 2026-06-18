@@ -1,456 +1,567 @@
-import { createWalletClient, createPublicClient, http, parseEventLogs, getAddress, getContractAddress, keccak256 } from 'viem';
-import { mainnet } from 'viem/chains';
-import { privateKeyToAccount } from 'viem/accounts';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { resolve, join } from 'path';
-import * as dotenv from 'dotenv';
-import { fileURLToPath } from 'url';
-import { buildSendQuery, getAxiomV2QueryAddress } from '@axiom-crypto/client';
-import { DataSubqueryType, HeaderField } from '@axiom-crypto/tools';
-import { buildLoanProofInputs, generateProof, regenerateCombinedVerifierArtifacts, toLoanProofWitnessInputs, writeLoanProofToml } from './prover.b.ts';
-import { encodeAxiomStateRootCallbackData, getUserFeaturesAndSignature } from './index.ts';
+import { buildSendQuery, getAxiomV2QueryAddress } from "@axiom-crypto/client";
+import { DataSubqueryType, HeaderField } from "@axiom-crypto/tools";
+import * as dotenv from "dotenv";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { join, resolve } from "path";
+import { fileURLToPath } from "url";
+import {
+	createPublicClient,
+	createWalletClient,
+	encodeAbiParameters,
+	getAddress,
+	getContractAddress,
+	http,
+	keccak256,
+	parseAbiParameters,
+	parseEther,
+	parseEventLogs,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { mainnet } from "viem/chains";
+import {
+	encodeAxiomStateRootCallbackData,
+	getUserFeaturesAndSignature,
+} from "./index.ts";
+import {
+	buildLoanProofInputs,
+	generateProof,
+	regenerateCombinedVerifierArtifacts,
+	toLoanProofWitnessInputs,
+	writeLoanProofToml,
+} from "./prover.ts";
 
-const __dirname = fileURLToPath(new URL('.', import.meta.url));
-dotenv.config({ path: resolve(__dirname, '../.env') });
-const CONTRACTS_OUT = resolve(__dirname, '../../contracts/out');
-const COMBINED_PROOF_FIXTURE = resolve(__dirname, '../../contracts/test/data/combined_proof.hex');
-const COMBINED_VERIFIER_ARTIFACT = join(CONTRACTS_OUT, 'combined_verifier.sol/HonkVerifier.json');
+const __dirname = fileURLToPath(new URL(".", import.meta.url));
+dotenv.config({ path: resolve(__dirname, "../.env") });
+const CONTRACTS_OUT = resolve(__dirname, "../../contracts/out");
+const COMBINED_PROOF_FIXTURE = resolve(
+	__dirname,
+	"../../contracts/test/data/combined_proof.hex",
+);
+const COMBINED_VERIFIER_ARTIFACT = join(
+	CONTRACTS_OUT,
+	"combined_verifier.sol/HonkVerifier.json",
+);
 const TRANSCRIPT_LIB_ARTIFACT_CANDIDATES = [
-    join(CONTRACTS_OUT, 'combined_verifier.sol/ZKTranscriptLib.json'),
-    join(CONTRACTS_OUT, 'account_verifier.sol/ZKTranscriptLib.json'),
-    join(CONTRACTS_OUT, 'storage_verifier.sol/ZKTranscriptLib.json'),
+	join(CONTRACTS_OUT, "combined_verifier.sol/ZKTranscriptLib.json"),
+	join(CONTRACTS_OUT, "account_verifier.sol/ZKTranscriptLib.json"),
+	join(CONTRACTS_OUT, "storage_verifier.sol/ZKTranscriptLib.json"),
 ];
-const SCORE_REGISTRY_ARTIFACT = join(CONTRACTS_OUT, 'ScoreRegistry.sol/ScoreRegistry.json');
-const LOCAL_DEV_FUND_WEI = '0x3635c9adc5dea00000';
+const SCORE_REGISTRY_ARTIFACT = join(
+	CONTRACTS_OUT,
+	"ScoreRegistry.sol/ScoreRegistry.json",
+);
+const LOCAL_DEV_FUND_WEI = "0x3635c9adc5dea00000";
+
+function encodeAxiomStateRootCallbackDataFull(
+	blockNumber: bigint,
+	user: `0x${string}`,
+	nonce: bigint,
+) {
+	return encodeAbiParameters(parseAbiParameters("address, uint256, uint256"), [
+		user,
+		blockNumber,
+		nonce,
+	]);
+}
 
 const AXIOM_QUERY_EVENT_ABI = [
-    {
-        type: 'event',
-        name: 'QueryInitiatedOnchain',
-        anonymous: false,
-        inputs: [
-            { name: 'caller', type: 'address', indexed: true },
-            { name: 'queryHash', type: 'bytes32', indexed: true },
-            { name: 'queryId', type: 'uint256', indexed: true },
-            { name: 'userSalt', type: 'bytes32', indexed: false },
-            { name: 'refundee', type: 'address', indexed: false },
-            { name: 'target', type: 'address', indexed: false },
-            { name: 'extraData', type: 'bytes', indexed: false },
-        ],
-    },
+	{
+		type: "event",
+		name: "QueryInitiatedOnchain",
+		anonymous: false,
+		inputs: [
+			{ name: "caller", type: "address", indexed: true },
+			{ name: "queryHash", type: "bytes32", indexed: true },
+			{ name: "queryId", type: "uint256", indexed: true },
+			{ name: "userSalt", type: "bytes32", indexed: false },
+			{ name: "refundee", type: "address", indexed: false },
+			{ name: "target", type: "address", indexed: false },
+			{ name: "extraData", type: "bytes", indexed: false },
+		],
+	},
 ] as const;
 
 function loadVerifierArtifact(filePath: string) {
-    return JSON.parse(readFileSync(filePath, 'utf-8'));
+	return JSON.parse(readFileSync(filePath, "utf-8"));
 }
 
 function loadTranscriptLibArtifact() {
-    for (const artifactPath of TRANSCRIPT_LIB_ARTIFACT_CANDIDATES) {
-        try {
-            return JSON.parse(readFileSync(artifactPath, 'utf-8'));
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-                throw error;
-            }
-        }
-    }
+	for (const artifactPath of TRANSCRIPT_LIB_ARTIFACT_CANDIDATES) {
+		try {
+			return JSON.parse(readFileSync(artifactPath, "utf-8"));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+				throw error;
+			}
+		}
+	}
 
-    throw new Error(`Missing ZKTranscriptLib artifact. Looked in: ${TRANSCRIPT_LIB_ARTIFACT_CANDIDATES.join(', ')}`);
+	throw new Error(
+		`Missing ZKTranscriptLib artifact. Looked in: ${TRANSCRIPT_LIB_ARTIFACT_CANDIDATES.join(", ")}`,
+	);
 }
 
 function buildHeaderStateRootQuery(blockNumber: bigint) {
-    return [
-        {
-            type: DataSubqueryType.Header,
-            subqueryData: {
-                blockNumber: Number(blockNumber),
-                fieldIdx: HeaderField.StateRoot,
-            },
-        },
-    ] as const;
+	return [
+		{
+			type: DataSubqueryType.Header,
+			subqueryData: {
+				blockNumber: Number(blockNumber),
+				fieldIdx: HeaderField.StateRoot,
+			},
+		},
+	] as const;
 }
 
 async function dispatchAxiomHeaderQuery(input: {
-    publicClient: any;
-    walletClient: any;
-    creditPolicyAbi: any;
-    axiomV2QueryAddress: `0x${string}`;
-    caller: `0x${string}`;
-    callbackTarget: `0x${string}`;
-    blockNumber: bigint;
-    stateRoot: `0x${string}`;
-    chainId: number;
-    rpcUrl: string;
+	publicClient: any;
+	walletClient: any;
+	creditPolicyAbi: any;
+	axiomV2QueryAddress: `0x${string}`;
+	caller: `0x${string}`;
+	callbackTarget: `0x${string}`;
+	blockNumber: bigint;
+	stateRoot: `0x${string}`;
+	chainId: number;
+	rpcUrl: string;
+	chain: any;
 }) {
-    const sendQueryArgs = await buildSendQuery({
-        chainId: String(input.chainId),
-        rpcUrl: input.rpcUrl,
-        axiomV2QueryAddress: input.axiomV2QueryAddress,
-        dataQuery: buildHeaderStateRootQuery(input.blockNumber) as unknown as any[],
-        computeQuery: {
-            k: 0,
-            resultLen: 1,
-            vkey: [],
-            computeProof: '0x00',
-        },
-        callback: {
-            target: input.callbackTarget,
-            extraData: encodeAxiomStateRootCallbackData(input.blockNumber),
-        },
-        caller: input.caller,
-        mock: false,
-        options: {},
-    });
+	console.log(
+		`Requesting provenance for block ${input.blockNumber} via Relayer ${input.callbackTarget}...`,
+	);
 
-    const queryTxHash = await input.walletClient.writeContract({
-        address: sendQueryArgs.address as `0x${string}`,
-        abi: sendQueryArgs.abi,
-        functionName: sendQueryArgs.functionName,
-        args: sendQueryArgs.args,
-        value: sendQueryArgs.value,
-    });
+	const dataQuery = encodeAbiParameters(
+		[
+			{
+				type: "tuple[]",
+				components: [
+					{ name: "type", type: "uint8" },
+					{ name: "subqueryData", type: "bytes" },
+				],
+			},
+		],
+		[
+			[
+				{
+					type: 0, // Header
+					subqueryData: encodeAbiParameters(
+						parseAbiParameters("uint32, uint8"),
+						[Number(input.blockNumber), 3], // 3 = StateRoot
+					),
+				},
+			],
+		],
+	);
 
-    const queryReceipt = await input.publicClient.waitForTransactionReceipt({ hash: queryTxHash });
-    const queryLogs = parseEventLogs({ abi: AXIOM_QUERY_EVENT_ABI, logs: queryReceipt.logs });
-    const queryEvent = queryLogs.find((log) => log.eventName === 'QueryInitiatedOnchain');
+	const nonce = await input.publicClient.readContract({
+		address: input.callbackTarget,
+		abi: input.creditPolicyAbi,
+		functionName: "nextNonce",
+	});
 
-    if (!queryEvent) {
-        throw new Error('Missing QueryInitiatedOnchain event from Axiom dispatch');
-    }
+	const queryTxHash = await input.walletClient.writeContract({
+		address: input.callbackTarget,
+		abi: input.creditPolicyAbi,
+		functionName: "request",
+		args: [
+			BigInt(input.chainId),
+			keccak256(dataQuery),
+			{ k: 0, resultLen: 1, vkey: [], computeProof: "0x00" },
+			input.blockNumber,
+			{
+				maxFeePerGas: 100000000000n,
+				callbackGasLimit: 1000000,
+				overrideAxiomQueryFee: 0n,
+			},
+			`0x${"00".repeat(32)}`,
+			input.caller,
+			dataQuery,
+		],
+		value: parseEther("0.1"),
+	});
 
-    if (getAddress(queryEvent.args.target as `0x${string}`).toLowerCase() !== input.callbackTarget.toLowerCase()) {
-        throw new Error(`Unexpected Axiom callback target: ${queryEvent.args.target}`);
-    }
+	const queryReceipt = await input.publicClient.waitForTransactionReceipt({
+		hash: queryTxHash,
+	});
+	const queryLogs = parseEventLogs({
+		abi: input.creditPolicyAbi,
+		logs: queryReceipt.logs,
+	});
+	const queryEvent = queryLogs.find(
+		(log) => log.eventName === "QueryRequested",
+	);
 
-    console.log(`Axiom query dispatched: ${queryEvent.args.queryId.toString()}`);
+	if (!queryEvent) {
+		throw new Error("Missing QueryRequested event from Relayer");
+	}
 
-    await input.publicClient.request({
-        method: 'anvil_impersonateAccount',
-        params: [input.axiomV2QueryAddress],
-    } as any);
+	const queryId = queryEvent.args.queryId;
+	console.log(`Axiom query dispatched via Relayer: ${queryId.toString()}`);
 
-    await input.publicClient.request({
-        method: 'anvil_setBalance',
-        params: [input.axiomV2QueryAddress, LOCAL_DEV_FUND_WEI],
-    } as any);
+	await input.publicClient.request({
+		method: "anvil_impersonateAccount",
+		params: [input.axiomV2QueryAddress],
+	} as any);
 
-    const axiomWalletClient = createWalletClient({
-        account: input.axiomV2QueryAddress,
-        chain: mainnet,
-        transport: http(input.rpcUrl, { timeout: 300000 }),
-    });
+	const TEST_FUND_HEX = "0x21e19e0c9bab2400000"; // 10000 ETH
+	await input.publicClient.request({
+		method: "anvil_setBalance",
+		params: [input.axiomV2QueryAddress, TEST_FUND_HEX],
+	} as any);
 
-    const callbackHash = await axiomWalletClient.writeContract({
-        address: input.callbackTarget,
-        abi: input.creditPolicyAbi,
-        functionName: 'axiomV2Callback',
-        args: [BigInt(input.chainId), input.caller, `0x${'00'.repeat(32)}` as `0x${string}`, [input.stateRoot], encodeAxiomStateRootCallbackData(input.blockNumber)],
-        account: input.axiomV2QueryAddress,
-    });
+	const axiomWalletClient = createWalletClient({
+		account: input.axiomV2QueryAddress,
+		chain: input.chain,
+		transport: http(input.rpcUrl, { timeout: 300000 }),
+	});
 
-    const callbackReceipt = await input.publicClient.waitForTransactionReceipt({ hash: callbackHash });
-    const callbackLogs = parseEventLogs({ abi: input.creditPolicyAbi, logs: callbackReceipt.logs });
-    const consumed = callbackLogs.find((log: any) => log.eventName === 'AxiomResultsConsumed');
+	console.log("Relaying Axiom callback...");
+	const callbackHash = await axiomWalletClient.writeContract({
+		address: input.callbackTarget,
+		abi: input.creditPolicyAbi,
+		functionName: "axiomV2Callback",
+		args: [
+			BigInt(input.chainId),
+			input.callbackTarget,
+			`0x${"00".repeat(32)}` as `0x${string}`,
+			[input.stateRoot],
+			encodeAxiomStateRootCallbackDataFull(
+				input.blockNumber,
+				input.caller,
+				BigInt(nonce),
+			),
+		],
+		account: input.axiomV2QueryAddress,
+		maxFeePerGas: 100000000000n,
+		maxPriorityFeePerGas: 100000000000n,
+		gas: 1000000n,
+	});
 
-    if (!consumed) {
-        throw new Error('Missing AxiomResultsConsumed event after local relay');
-    }
+	const callbackReceipt = await input.publicClient.waitForTransactionReceipt({
+		hash: callbackHash,
+	});
+	const callbackLogs = parseEventLogs({
+		abi: input.creditPolicyAbi,
+		logs: callbackReceipt.logs,
+	});
+	const consumed = callbackLogs.find(
+		(log: any) => log.eventName === "AxiomResultsConsumed",
+	);
 
-    console.log(`Axiom callback relayed for block ${input.blockNumber.toString()}`);
+	if (!consumed) {
+		throw new Error("Missing AxiomResultsConsumed event after local relay");
+	}
+
+	console.log(
+		`Axiom callback relayed for block ${input.blockNumber.toString()}`,
+	);
 }
 
 function linkLibraryBytecode(
-    bytecode: string,
-    linkReferences: Record<string, Record<string, Array<{ start: number; length: number }>>>,
-    libraryName: string,
-    libraryAddress: string,
+	bytecode: string,
+	linkReferences: Record<
+		string,
+		Record<string, Array<{ start: number; length: number }>>
+	>,
+	libraryName: string,
+	libraryAddress: string,
 ) {
-    let linkedBytecode = bytecode;
+	let linkedBytecode = bytecode;
 
-    for (const referencesByLibrary of Object.values(linkReferences)) {
-        const references = referencesByLibrary[libraryName];
-        if (!references) {
-            continue;
-        }
+	for (const referencesByLibrary of Object.values(linkReferences)) {
+		const references = referencesByLibrary[libraryName];
+		if (!references) {
+			continue;
+		}
 
-        for (const reference of references) {
-            const startHex = reference.start * 2 + 2;
-            const lengthHex = reference.length * 2;
-            linkedBytecode =
-                linkedBytecode.substring(0, startHex) +
-                libraryAddress.slice(2).toLowerCase() +
-                linkedBytecode.substring(startHex + lengthHex);
-        }
-    }
+		for (const reference of references) {
+			const startHex = reference.start * 2 + 2;
+			const lengthHex = reference.length * 2;
+			linkedBytecode =
+				linkedBytecode.substring(0, startHex) +
+				libraryAddress.slice(2).toLowerCase() +
+				linkedBytecode.substring(startHex + lengthHex);
+		}
+	}
 
-    if (linkedBytecode.includes('__$')) {
-        throw new Error(`Unresolved library placeholders remain in ${libraryName} bytecode.`);
-    }
+	if (linkedBytecode.includes("__$")) {
+		throw new Error(
+			`Unresolved library placeholders remain in ${libraryName} bytecode.`,
+		);
+	}
 
-    return linkedBytecode as `0x${string}`;
+	return linkedBytecode as `0x${string}`;
 }
 
 async function main() {
-    const privateKey = (process.env.AGENT_PRIVATE_KEY || '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80') as `0x${string}`;
-    const account = privateKeyToAccount(privateKey);
-    const rpcUrl = process.env.RPC_URL || 'http://127.0.0.1:8545';
-    const proofRpcUrl =
-        process.env.PROOF_RPC_URL ||
-        process.env.anvil_RPC_URL ||
-        (process.env.ALCHEMY_API_KEY ? `https://eth-anvil.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : rpcUrl);
-    const transport = http(rpcUrl, {
-        timeout: 300000,
-    });
-    const borrowerAddress = getAddress(process.env.ADDR || '0xE71CbF47Fff309813bcea54f3ecF49a5F129264D');
-    process.env.PROOF_RPC_URL = proofRpcUrl;
-    console.log(`Using proof RPC: ${proofRpcUrl}`);
+	const privateKey = (process.env.AGENT_PRIVATE_KEY ||
+		"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80") as `0x${string}`;
+	const account = privateKeyToAccount(privateKey);
+	const rpcUrl = process.env.RPC_URL || "http://127.0.0.1:8545";
+	const proofRpcUrl =
+		process.env.PROOF_RPC_URL ||
+		process.env.anvil_RPC_URL ||
+		(process.env.ALCHEMY_API_KEY
+			? `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`
+			: rpcUrl);
+	const transport = http(rpcUrl, {
+		timeout: 300000,
+	});
+	const borrowerAddress = getAddress(
+		process.env.ADDR || "0x4a4E5DF4874e405912b3cAb2cD18B889ad4bE220",
+	);
+	process.env.PROOF_RPC_URL = proofRpcUrl;
+	console.log(`Using proof RPC: ${proofRpcUrl}`);
 
-    const publicClient = createPublicClient({
-        chain: mainnet,
-        transport,
-    });
+	const anvil = {
+		...mainnet,
+		id: 31337,
+	};
+	const chain =
+		rpcUrl.includes("127.0.0.1") || rpcUrl.includes("localhost")
+			? anvil
+			: mainnet;
 
-    const walletClient = createWalletClient({
-        account,
-        chain: mainnet,
-        transport,
-    });
+	const publicClient = createPublicClient({
+		chain,
+		transport,
+	});
 
-    await publicClient.request({
-        method: 'anvil_setBalance',
-        params: [account.address, '0x100000000000000000000'],
-    } as any);
+	const walletClient = createWalletClient({
+		account,
+		chain,
+		transport,
+	});
 
-    console.log(`Connected account: ${account.address}`);
+	await publicClient.request({
+		method: "anvil_setBalance",
+		params: [account.address, "0x100000000000000000000"],
+	} as any);
 
-    const axiomV2QueryAddress = getAddress(process.env.AXIOM_V2_QUERY_ADDRESS || getAxiomV2QueryAddress('1')) as `0x${string}`;
-    const transcriptLibJson = loadTranscriptLibArtifact();
-    const localForkBlockNumber = await publicClient.getBlockNumber();
+	console.log(`Connected account: ${account.address}`);
 
-    const bootstrapNonce = Math.floor(Date.now() / 1000) >>> 0;
-    const predictedCreditPolicyAddress = getContractAddress({
-        from: account.address,
-        nonce: BigInt((await publicClient.getTransactionCount({ address: account.address })) + 2),
-    });
+	const deploymentPath = resolve(
+		__dirname,
+		"../../frontend/public/deployment.json",
+	);
+	if (!existsSync(deploymentPath)) {
+		throw new Error("deployment.json not found. Run contracts:deploy first.");
+	}
+	const deployment = JSON.parse(readFileSync(deploymentPath, "utf-8"));
 
-    console.log('Generating Noir proofs in memory...');
-    const proofInputs = await buildLoanProofInputs({
-        userAddress: borrowerAddress,
-        contractAddress: predictedCreditPolicyAddress,
-        nonce: bootstrapNonce,
-        rpcUrl: proofRpcUrl,
-        provenanceOverrides: {
-            blockNumber: localForkBlockNumber + 1n,
-        },
-    });
+	const axiomV2QueryAddress = getAddress(deployment.axiomV2QueryAddress);
+	const creditVerifierAddress = getAddress(deployment.creditVerifierAddress);
+	const scoreRegistryAddress = getAddress(deployment.scoreRegistryAddress);
+	const axiomV3RelayerAddress = getAddress(deployment.axiomV3RelayerAddress);
+	const creditPolicyAbi = JSON.parse(
+		readFileSync(
+			join(CONTRACTS_OUT, "CreditVerifier.sol/CreditVerifier.json"),
+			"utf-8",
+		),
+	).abi;
 
-    const provisionalScoreData = await getUserFeaturesAndSignature(
-        borrowerAddress,
-        predictedCreditPolicyAddress,
-        1,
-        bootstrapNonce,
-        rpcUrl,
-    );
-    const provisionalScore = provisionalScoreData.predictedScore;
+	const transcriptLibJson = loadTranscriptLibArtifact();
+	const FINALIZED_MAINNET_BLOCK = 20000000n;
+	const bootstrapNonce = Math.floor(Date.now() / 1000) >>> 0;
 
-    const combinedProverTomlPath = resolve(__dirname, '../../circuit/combined/Prover.toml');
-    writeLoanProofToml(combinedProverTomlPath, toLoanProofWitnessInputs(proofInputs));
+	const AAVE_POOL = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2";
 
-    regenerateCombinedVerifierArtifacts();
+	console.log("Generating Noir proofs in memory...");
+	const proofInputs = await buildLoanProofInputs({
+		userAddress: borrowerAddress,
+		contractAddress: AAVE_POOL,
+		nonce: bootstrapNonce,
+		rpcUrl: proofRpcUrl,
+		provenanceOverrides: {
+			blockNumber: FINALIZED_MAINNET_BLOCK,
+		},
+	});
 
-    const creditPolicyJson = JSON.parse(readFileSync(join(CONTRACTS_OUT, 'CreditPolicy.sol/CreditPolicy.json'), 'utf-8'));
+	const provisionalScoreData = await getUserFeaturesAndSignature(
+		borrowerAddress,
+		creditVerifierAddress,
+		1,
+		bootstrapNonce,
+		rpcUrl,
+		{
+			blockNumber: FINALIZED_MAINNET_BLOCK,
+		},
+	);
+	const provisionalScore = provisionalScoreData.predictedScore;
 
-    console.log('Deploying ZKTranscriptLib...');
-    const transcriptLibHash = await walletClient.deployContract({
-        abi: transcriptLibJson.abi,
-        bytecode: transcriptLibJson.bytecode.object as `0x${string}`,
-        account,
-    });
-    const transcriptLibReceipt = await publicClient.waitForTransactionReceipt({ hash: transcriptLibHash });
-    const transcriptLibAddress = transcriptLibReceipt.contractAddress!;
+	const combinedProverTomlPath = resolve(
+		__dirname,
+		"../../circuit/combined/Prover.toml",
+	);
+	writeLoanProofToml(
+		combinedProverTomlPath,
+		toLoanProofWitnessInputs(proofInputs),
+	);
 
-    const combinedVerifierJson = loadVerifierArtifact(COMBINED_VERIFIER_ARTIFACT);
-    const combinedVerifierBytecode = linkLibraryBytecode(
-        combinedVerifierJson.bytecode.object,
-        combinedVerifierJson.bytecode.linkReferences,
-        'ZKTranscriptLib',
-        transcriptLibAddress,
-    );
+	// regenerateCombinedVerifierArtifacts(); // Skip since we use deployed ones
 
-    console.log('Deploying combined verifier...');
-    const deployedCombinedVerifierHash = await walletClient.deployContract({
-        abi: combinedVerifierJson.abi,
-        bytecode: combinedVerifierBytecode,
-        account,
-    });
-    const deployedCombinedVerifierReceipt = await publicClient.waitForTransactionReceipt({ hash: deployedCombinedVerifierHash });
-    const deployedCombinedVerifierAddress = deployedCombinedVerifierReceipt.contractAddress!;
+	if (rpcUrl.includes("127.0.0.1") || rpcUrl.includes("localhost")) {
+		await publicClient.request({
+			method: "anvil_setBalance",
+			params: [creditVerifierAddress, LOCAL_DEV_FUND_WEI],
+		} as any);
+		console.log(
+			`Funded CreditVerifier for local testing: ${creditVerifierAddress}`,
+		);
+	}
 
-    console.log('Deploying CreditPolicy...');
-    const creditPolicyHash = await walletClient.deployContract({
-        abi: creditPolicyJson.abi,
-        bytecode: creditPolicyJson.bytecode.object as `0x${string}`,
-        args: [axiomV2QueryAddress, deployedCombinedVerifierAddress],
-        account,
-    });
-    const creditPolicyReceipt = await publicClient.waitForTransactionReceipt({ hash: creditPolicyHash });
-    const creditPolicyAddress = creditPolicyReceipt.contractAddress!;
+	console.log(
+		`Injecting verified root for block ${proofInputs.metadata.blockNumber} directly into Relayer storage...`,
+	);
+	const rootSlot = keccak256(
+		encodeAbiParameters(parseAbiParameters("uint256, uint256"), [
+			proofInputs.metadata.blockNumber,
+			0n,
+		]),
+	);
+	await publicClient.request({
+		method: "anvil_setStorageAt",
+		params: [axiomV3RelayerAddress, rootSlot, proofInputs.metadata.stateRoot],
+	} as any);
 
-    if (creditPolicyAddress.toLowerCase() !== predictedCreditPolicyAddress.toLowerCase()) {
-        throw new Error(`Predicted CreditPolicy address mismatch: predicted=${predictedCreditPolicyAddress} deployed=${creditPolicyAddress}`);
-    }
+	// Verify injection
+	const verifiedRoot = await publicClient.readContract({
+		address: axiomV3RelayerAddress,
+		abi: JSON.parse(
+			readFileSync(
+				join(CONTRACTS_OUT, "AxiomV3Relayer.sol/AxiomV3Relayer.json"),
+				"utf-8",
+			),
+		).abi,
+		functionName: "verifiedRoots",
+		args: [proofInputs.metadata.blockNumber],
+	});
+	if (verifiedRoot !== proofInputs.metadata.stateRoot) {
+		throw new Error(
+			`State root injection failed: expected=${proofInputs.metadata.stateRoot} actual=${verifiedRoot}`,
+		);
+	}
+	console.log("State root successfully injected and verified on-chain.");
 
-    if (rpcUrl.includes('127.0.0.1') || rpcUrl.includes('localhost')) {
-        await publicClient.request({
-            method: 'anvil_setBalance',
-            params: [creditPolicyAddress, LOCAL_DEV_FUND_WEI],
-        } as any);
-        console.log(`Funded CreditPolicy for local testing: ${creditPolicyAddress}`);
-    }
-    console.log(`CreditPolicy deployed at: ${creditPolicyAddress}`);
+	console.log("Generating combined proof after verified Axiom root...");
+	const combinedProofResult = await generateProof("combined", proofInputs);
 
-    const scoreRegistryJson = JSON.parse(readFileSync(SCORE_REGISTRY_ARTIFACT, 'utf-8'));
-    console.log('Deploying ScoreRegistry...');
-    const scoreRegistryHash = await walletClient.deployContract({
-        abi: scoreRegistryJson.abi,
-        bytecode: scoreRegistryJson.bytecode.object as `0x${string}`,
-        account,
-    });
-    const scoreRegistryReceipt = await publicClient.waitForTransactionReceipt({ hash: scoreRegistryHash });
-    const scoreRegistryAddress = scoreRegistryReceipt.contractAddress!;
-    console.log(`ScoreRegistry deployed at: ${scoreRegistryAddress}`);
+	if (combinedProofResult.publicInputs.length !== 1) {
+		throw new Error(
+			`Unexpected combined public input count: ${combinedProofResult.publicInputs.length}`,
+		);
+	}
 
-    const setScoreHash = await walletClient.writeContract({
-        address: scoreRegistryAddress,
-        abi: scoreRegistryJson.abi,
-        functionName: 'setScore',
-        args: [borrowerAddress, provisionalScore],
-        account,
-    });
-    await publicClient.waitForTransactionReceipt({ hash: setScoreHash });
-    console.log(`Initial score set for ${borrowerAddress}`);
+	mkdirSync(resolve(COMBINED_PROOF_FIXTURE, ".."), { recursive: true });
+	writeFileSync(
+		COMBINED_PROOF_FIXTURE,
+		JSON.stringify(
+			{
+				combinedProof: {
+					proof: combinedProofResult.proof,
+					publicInputs: combinedProofResult.publicInputs,
+				},
+				scoreInputs: {
+					metadata: {
+						nonce: proofInputs.metadata.nonce,
+						chainId: proofInputs.metadata.chainId,
+						userAddress: proofInputs.metadata.userAddress,
+						blockNumber: proofInputs.metadata.blockNumber.toString(),
+						stateRoot: proofInputs.metadata.stateRoot,
+						publicCommitment: proofInputs.metadata.publicCommitment,
+						accountTrieKey: proofInputs.metadata.accountTrieKey,
+						storageRoot: proofInputs.metadata.storageRoot,
+						storageProofKey: proofInputs.metadata.storageProofKey,
+						repaymentRate: proofInputs.metadata.repaymentRate,
+						score: proofInputs.metadata.score,
+						isSolvent: proofInputs.metadata.isSolvent,
+					},
+				},
+			},
+			null,
+			2,
+		),
+		"utf-8",
+	);
 
-    console.log('Dispatching Axiom header query and relaying callback locally...');
-    await dispatchAxiomHeaderQuery({
-        publicClient,
-        walletClient,
-        creditPolicyAbi: creditPolicyJson.abi,
-        axiomV2QueryAddress,
-        caller: account.address,
-        callbackTarget: creditPolicyAddress,
-        blockNumber: proofInputs.metadata.blockNumber,
-        stateRoot: proofInputs.metadata.stateRoot,
-        chainId: Number(process.env.AXIOM_SOURCE_CHAIN_ID || proofInputs.metadata.chainId || 1),
-        rpcUrl,
-    });
+	const proofHash = keccak256(combinedProofResult.proof);
+	const score = proofInputs.metadata.score;
+	const isSolvent = proofInputs.metadata.isSolvent;
+	const stateRoot = proofInputs.metadata.stateRoot;
+	const publicCommitment = proofInputs.metadata.publicCommitment;
+	const verifiedBlockNumber = proofInputs.metadata.blockNumber;
+	if (verifiedBlockNumber === 0n) {
+		throw new Error(
+			"Relayer failure: verifiedBlockNumber is 0. Cannot proceed with proof generation against genesis.",
+		);
+	}
+	const userToImpersonate = proofInputs.metadata.userAddress;
 
-    console.log('Generating combined proof after verified Axiom root...');
-    const combinedProofResult = await generateProof('combined', proofInputs);
+	console.log(
+		`Combined public inputs: ${combinedProofResult.publicInputs.length}`,
+	);
+	if (combinedProofResult.publicInputs[0] !== publicCommitment) {
+		throw new Error(
+			`Public commitment mismatch: proof=${combinedProofResult.publicInputs[0]} input=${publicCommitment}`,
+		);
+	}
 
-    if (combinedProofResult.publicInputs.length !== 1) {
-        throw new Error(`Unexpected combined public input count: ${combinedProofResult.publicInputs.length}`);
-    }
+	await publicClient.request({
+		method: "anvil_impersonateAccount",
+		params: [userToImpersonate],
+	} as any);
 
-    mkdirSync(resolve(COMBINED_PROOF_FIXTURE, '..'), { recursive: true });
-    writeFileSync(
-        COMBINED_PROOF_FIXTURE,
-        JSON.stringify(
-            {
-                combinedProof: {
-                    proof: combinedProofResult.proof,
-                    publicInputs: combinedProofResult.publicInputs,
-                },
-                scoreInputs: {
-                    metadata: {
-                        nonce: proofInputs.metadata.nonce,
-                        chainId: proofInputs.metadata.chainId,
-                        userAddress: proofInputs.metadata.userAddress,
-                        blockNumber: proofInputs.metadata.blockNumber.toString(),
-                        stateRoot: proofInputs.metadata.stateRoot,
-                        publicCommitment: proofInputs.metadata.publicCommitment,
-                        accountTrieKey: proofInputs.metadata.accountTrieKey,
-                        storageRoot: proofInputs.metadata.storageRoot,
-                        storageProofKey: proofInputs.metadata.storageProofKey,
-                        repaymentRate: proofInputs.metadata.repaymentRate,
-                        score: proofInputs.metadata.score,
-                        isSolvent: proofInputs.metadata.isSolvent,
-                    },
-                },
-            },
-            null,
-            2,
-        ),
-        'utf-8',
-    );
+	await publicClient.request({
+		method: "anvil_setBalance",
+		params: [userToImpersonate, "0x100000000000000000000"],
+	} as any);
 
-    const proofHash = keccak256(combinedProofResult.proof);
-    const score = proofInputs.metadata.score;
-    const isSolvent = proofInputs.metadata.isSolvent;
-    const stateRoot = proofInputs.metadata.stateRoot;
-    const publicCommitment = proofInputs.metadata.publicCommitment;
-    const verifiedBlockNumber = proofInputs.metadata.blockNumber;
-    if (verifiedBlockNumber === 0n) {
-        throw new Error('Relayer failure: verifiedBlockNumber is 0. Cannot proceed with proof generation against genesis.');
-    }
-    const userToImpersonate = proofInputs.metadata.userAddress;
+	console.log(
+		`Simulating verifyAndRegisterScore with score: ${score} as user ${userToImpersonate}...`,
+	);
+	try {
+		const { request } = await publicClient.simulateContract({
+			address: creditVerifierAddress,
+			abi: creditPolicyAbi,
+			functionName: "verifyAndRegisterScore",
+			args: [
+				combinedProofResult.proof,
+				publicCommitment,
+				score,
+				isSolvent,
+				proofHash,
+				proofInputs.metadata.nonce,
+				userToImpersonate,
+				stateRoot,
+				verifiedBlockNumber,
+			],
+			account: userToImpersonate,
+		});
 
-    console.log(`Combined public inputs: ${combinedProofResult.publicInputs.length}`);
-    if (combinedProofResult.publicInputs[0] !== publicCommitment) {
-        throw new Error(`Public commitment mismatch: proof=${combinedProofResult.publicInputs[0]} input=${publicCommitment}`);
-    }
+		console.log("Sending verifyAndRegisterScore transaction...");
+		const txHash = await walletClient.writeContract({
+			...request,
+			account: userToImpersonate,
+		} as any);
+		const receipt = await publicClient.waitForTransactionReceipt({
+			hash: txHash,
+		});
 
-    await publicClient.request({
-        method: 'anvil_impersonateAccount',
-        params: [userToImpersonate],
-    } as any);
+		console.log(`Tx confirmed: ${txHash}`);
 
-    await publicClient.request({
-        method: 'anvil_setBalance',
-        params: [userToImpersonate, '0x100000000000000000000'],
-    } as any);
+		const logs = parseEventLogs({
+			abi: creditPolicyAbi,
+			logs: receipt.logs,
+		});
 
-    console.log(`Simulating verifyAndRegisterScore with score: ${score} as user ${userToImpersonate}...`);
-    try {
-        const { request } = await publicClient.simulateContract({
-            address: creditPolicyAddress,
-            abi: creditPolicyJson.abi,
-            functionName: 'verifyAndRegisterScore',
-            args: [
-                combinedProofResult.proof,
-                publicCommitment,
-                score,
-                isSolvent,
-                proofHash,
-                proofInputs.metadata.nonce,
-                userToImpersonate,
-                stateRoot,
-                verifiedBlockNumber,
-            ],
-            account: userToImpersonate,
-        });
-
-        console.log('Sending verifyAndRegisterScore transaction...');
-        const txHash = await walletClient.writeContract({
-            ...request,
-            account: userToImpersonate,
-        } as any);
-        const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-
-        console.log(`Tx confirmed: ${txHash}`);
-
-        const logs = parseEventLogs({
-            abi: creditPolicyJson.abi,
-            logs: receipt.logs,
-        });
-
-        logs.forEach((log: any) => {
-            if (log.eventName === 'ScoreRegistered') {
-                console.log('ScoreRegistered Event:', log.args);
-            }
-        });
-    } catch (err: any) {
-        console.log('Transaction Failed!', err);
-    }
+		logs.forEach((log: any) => {
+			if (log.eventName === "ScoreRegistered") {
+				console.log("ScoreRegistered Event:", log.args);
+			}
+		});
+	} catch (err: any) {
+		console.log("Transaction Failed!", err);
+	}
 }
 
 main().catch(console.error);

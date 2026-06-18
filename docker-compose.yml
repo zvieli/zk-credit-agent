@@ -1,0 +1,67 @@
+services:
+  # Redis for task queuing
+  redis:
+    image: redis:alpine
+    container_name: zk_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Blockchain Emulator (Anvil)
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    container_name: zk_anvil
+    entrypoint: ["anvil", "--host", "0.0.0.0", "--fork-url", "https://eth-mainnet.g.alchemy.com/v2/q8TNbtfn1iWfAXRmcdoWp", "--fork-block-number", "20000000", "--chain-id", "31337", "--code-size-limit", "300000"]
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test: ["CMD", "cast", "rpc", "eth_blockNumber", "--rpc-url", "http://127.0.0.1:8545"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # API Server
+  api:
+    build:
+      context: .
+      dockerfile: packages/backend/Dockerfile
+    container_name: zk_api
+    command: npx tsx src/api.ts
+    depends_on:
+      redis:
+        condition: service_healthy
+      anvil:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - RPC_URL=http://anvil:8545
+      - ANVIL_RPC_URL=http://anvil:8545
+      - PORT=3001
+      - NODE_OPTIONS=--no-warnings
+      - CREDIT_POLICY_ADDRESS=0xc2ebb3823477ada40ada4dacd12c1c9487b1dbbb
+    ports:
+      - "3001:3001"
+
+  # Prover Worker
+  worker:
+    build:
+      context: .
+      dockerfile: packages/backend/Dockerfile
+    container_name: zk_worker
+    command: npx tsx src/worker.ts
+    depends_on:
+      redis:
+        condition: service_healthy
+      anvil:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - RPC_URL=http://anvil:8545
+      - ANVIL_RPC_URL=http://anvil:8545
+      - PROVER_CONCURRENCY=1
+      - NODE_OPTIONS=--no-warnings
+      - CREDIT_POLICY_ADDRESS=0xc2ebb3823477ada40ada4dacd12c1c9487b1dbbb

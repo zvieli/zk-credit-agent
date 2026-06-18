@@ -13,6 +13,10 @@ interface IAxiomV3Relayer {
     function verifiedRoots(uint256 blockNumber) external view returns (bytes32);
 }
 
+interface IAxiomFeeSink {
+    function depositAxiomFee(address user, uint256 blockNumber, uint256 amount) external returns (uint256);
+}
+
 contract CreditVerifier {
     address public immutable relayer;
     address public immutable scoreRegistry;
@@ -23,8 +27,11 @@ contract CreditVerifier {
 
     uint256 public constant SERVICE_FEE = 0.001 ether;
     uint256 public constant VERIFY_OVERHEAD = 60000;
+    uint256 public constant AXIOM_REQUEST_FEE = 0.07 ether;
 
     event ScoreRegistered(address indexed user, uint32 score);
+    event DepositAdded(address indexed user, uint256 indexed blockNumber, uint256 amount);
+    event DepositSpent(address indexed user, uint256 indexed blockNumber, uint256 amount, address recipient);
 
     constructor(address _relayer, address _scoreRegistry, address _combinedVerifier) {
         relayer = _relayer;
@@ -37,8 +44,22 @@ contract CreditVerifier {
         _;
     }
 
-    function deposit(address user, uint256 blockNumber) external payable onlyRelayer {
+    function deposit(address user, uint256 blockNumber) external payable {
         deposits[user][blockNumber] += msg.value;
+        emit DepositAdded(user, blockNumber, msg.value);
+    }
+
+    function depositAxiomFee(address user, uint256 blockNumber, uint256 amount) external onlyRelayer returns (uint256) {
+        uint256 available = deposits[user][blockNumber];
+        require(amount > 0, "invalid amount");
+        require(available >= amount, "insufficient deposit");
+
+        deposits[user][blockNumber] = available - amount;
+        (bool success, ) = payable(msg.sender).call{value: amount}("");
+        require(success, "axiom fee transfer failed");
+
+        emit DepositSpent(user, blockNumber, amount, msg.sender);
+        return amount;
     }
 
     function verifyAndRegisterScore(
@@ -54,23 +75,21 @@ contract CreditVerifier {
     ) external {
         uint256 startGas = gasleft();
         
-        // TEMPORARY: Commented out for local testing/POC
-        // require(!usedProofs[proofHash], "proof already used");
-        // require(IAxiomV3Relayer(relayer).verifiedRoots(blockNumber) == stateRoot, "state root mismatch");
-        // require(stateRoot != bytes32(0), "root not verified");
+        require(!usedProofs[proofHash], "proof already used");
+        require(IAxiomV3Relayer(relayer).verifiedRoots(blockNumber) == stateRoot, "state root mismatch");
+        require(stateRoot != bytes32(0), "root not verified");
 
         bytes32[] memory publicInputs = new bytes32[](1);
         publicInputs[0] = commitment;
         
-        // TEMPORARY: Commented out for local testing/POC to accept dummy proofs
-        // require(CombinedVerifier(combinedVerifier).verify(proof, publicInputs), "combined proof failed");
+        require(CombinedVerifier(combinedVerifier).verify(proof, publicInputs), "combined proof failed");
 
         usedProofs[proofHash] = true;
         IScoreRegistry(scoreRegistry).setScore(user, score);
 
         emit ScoreRegistered(user, score);
 
-        // Refund Agent 2 (msg.sender submitting the final proof) + premium
+        // Refund relayer gas + premium from the user's remaining escrow balance.
         uint256 userDeposit = deposits[user][blockNumber];
         if (userDeposit > 0) {
             uint256 gasUsed = startGas - gasleft() + VERIFY_OVERHEAD;
@@ -82,7 +101,7 @@ contract CreditVerifier {
             (bool success, ) = payable(msg.sender).call{value: refund}("");
             require(success, "refund failed");
             
-            // Refund remaining deposit to user (escrow complete)
+            // Refund remaining deposit to user (escrow complete).
             if (deposits[user][blockNumber] > 0) {
                 uint256 remaining = deposits[user][blockNumber];
                 deposits[user][blockNumber] = 0;
