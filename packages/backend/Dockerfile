@@ -1,7 +1,6 @@
 FROM node:20-slim
 
-# Install build dependencies and tools
-RUN apt-get update && apt-get install -y curl bash libc6 libstdc++6 python3 make g++ git libc++1 libc++abi1
+RUN apt-get update && apt-get install -y curl bash libc6 libstdc++6 python3 make g++ git libc++1 libc++abi1 jq
 
 # Install nargo (Noir)
 RUN mkdir -p /root/.nargo/bin
@@ -14,6 +13,7 @@ RUN mkdir -p /root/.bb
 RUN curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/master/barretenberg/cpp/installation/install | bash || true
 ENV PATH="/root/.bb:$PATH"
 RUN /root/.bb/bbup -v 0.47.1
+ENV BB_BIN="/root/.bb/bb"
 
 # Install Foundry (forge, cast)
 RUN curl -L https://foundry.paradigm.xyz | bash || true
