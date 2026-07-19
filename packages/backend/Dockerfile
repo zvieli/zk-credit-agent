@@ -1,7 +1,7 @@
 FROM node:20-slim
 
 # Install build dependencies and tools
-RUN apt-get update && apt-get install -y curl bash libc6 libstdc++6 python3 make g++ git
+RUN apt-get update && apt-get install -y curl bash libc6 libstdc++6 python3 make g++ git libc++1 libc++abi1
 
 # Install nargo (Noir)
 RUN mkdir -p /root/.nargo/bin
@@ -15,14 +15,19 @@ RUN curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/maste
 ENV PATH="/root/.bb:$PATH"
 RUN /root/.bb/bbup -v 0.47.1
 
+# Install Foundry (forge, cast)
+RUN curl -L https://foundry.paradigm.xyz | bash || true
+ENV PATH="/root/.foundry/bin:$PATH"
+RUN /root/.foundry/bin/foundryup
+
 WORKDIR /app
 
 # Copy root and backend package files
-COPY package.json package-lock.json ./
+COPY package.json ./
 COPY packages/backend/package.json ./packages/backend/
 
-# Install dependencies
-RUN npm install && npm install -g tsx
+# Install dependencies (ignoring scripts because source files are not copied yet)
+RUN npm install --ignore-scripts && npm install -g tsx
 
 # Copy the rest of the application code
 COPY . .
