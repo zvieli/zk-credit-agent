@@ -5,6 +5,8 @@ import { createTestClient, createWalletClient, http, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { mainnet } from "viem/chains";
 
+import { dispatchAlert, relayerBalanceEth } from "./telemetry/index.js";
+
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 dotenv.config({ path: resolve(__dirname, "../.env") });
 
@@ -27,6 +29,19 @@ async function main() {
 		value: parseEther("0.5"),
 	});
 	console.log("Account funded!");
+
+	const balanceEth = 0.5;
+	relayerBalanceEth.set({ wallet: account.address }, balanceEth);
+
+	if (balanceEth < 0.05) {
+		dispatchAlert({
+			severity: "warning",
+			category: "wallet_balance",
+			title: "Low Relayer Wallet Gas Balance",
+			message: `Wallet ${account.address} balance is low: ${balanceEth} ETH`,
+			metadata: { wallet: account.address, balanceEth },
+		});
+	}
 }
 
 main().catch(console.error);

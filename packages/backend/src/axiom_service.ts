@@ -26,6 +26,12 @@ import {
 	toLoanProofWitnessInputs,
 	writeLoanProofToml,
 } from "./prover.ts";
+import {
+	axiomQueryDurationSeconds,
+	axiomQueriesTotal,
+	dispatchAlert,
+	logger,
+} from "./telemetry/index.js";
 
 export async function generateProof(
 	circuitName: ProofCircuitName,
@@ -472,10 +478,20 @@ export async function requestAxiomRoot(
 	}
 
 	if (!queryEvent) {
+		axiomQueriesTotal.inc({ status: "failure" });
+		dispatchAlert({
+			severity: "critical",
+			category: "axiom_relayer",
+			title: "Axiom Query Timeout",
+			message: `Missing QueryInitiatedOnchain event from Axiom dispatch. Expected address ${axiomV2QueryAddress}`,
+			metadata: { blockNumber: params.blockNumber, userAddress: validatedUserAddress },
+		});
 		throw new Error(
 			`Missing QueryInitiatedOnchain event from Axiom dispatch. Expected Axiom V2 Query address ${axiomV2QueryAddress}.`,
 		);
 	}
+
+	axiomQueriesTotal.inc({ status: "success" });
 
 	return {
 		txHash,

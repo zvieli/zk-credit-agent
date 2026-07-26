@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import {
 	createServer,
 	type IncomingMessage,
@@ -26,6 +27,14 @@ import {
 import { initBackendEnv, readFrontendDeploymentConfig } from "./env.ts";
 import { getUserFeaturesAndSignature } from "./index.ts";
 import { proofQueue } from "./queue.ts";
+import {
+	dispatchAlert,
+	getMetrics,
+	httpRequestDurationSeconds,
+	httpRequestsTotal,
+	logger,
+	runWithContext,
+} from "./telemetry/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -929,7 +938,7 @@ async function handleGenerateProof(
 }
 
 export function startApiServer(port = resolveBackendPort()) {
-	const server = createServer(async (request, response) => {
+	const server = createServer((request, response) => {
 		setCorsHeaders(response);
 
 		if (request.method === "OPTIONS") {
@@ -938,24 +947,31 @@ export function startApiServer(port = resolveBackendPort()) {
 			return;
 		}
 
-		try {
-			const requestUrl = new URL(request.url ?? "/", "http://localhost");
-			const routePath = normalizeRoutePath(requestUrl.pathname);
+		const traceId = (request.headers["x-trace-id"] as string) || crypto.randomUUID();
+		response.setHeader("x-trace-id", traceId);
 
-			let parsedBody: unknown;
-			if (request.method === "POST") {
-				try {
-					parsedBody = await readJsonBody(request);
-				} catch {
+		const startTime = process.hrtime();
+		const requestUrl = new URL(request.url ?? "/", "http://localhost");
+		const routePath = normalizeRoutePath(requestUrl.pathname);
+
+		response.on("finish", () => {
+			const diff = process.hrtime(startTime);
+			const durationSeconds = diff[0] + diff[1] / 1e9;
+			const status = response.statusCode.toString();
+			httpRequestsTotal.inc({ method: request.method || "GET", route: routePath, status });
+			httpRequestDurationSeconds.observe(
+				{ method: request.method || "GET", route: routePath, status },
+				durationSeconds,
+			);
+		});
+
+		void runWithContext({ traceId, spanId: crypto.randomUUID().slice(0, 8) }, async () => {
+			try {
+				let parsedBody: unknown;
+				if (request.method === "POST" && parsedBody === undefined) {
 					sendJson(response, 400, { error: "Invalid JSON body" });
 					return;
 				}
-
-				if (parsedBody === undefined) {
-					sendJson(response, 400, { error: "Invalid JSON body" });
-					return;
-				}
-			}
 
 			if (
 				routePath === "/get-proof-data" &&
@@ -976,6 +992,12 @@ export function startApiServer(port = resolveBackendPort()) {
 
 			if (routePath === "/submit-score" && request.method === "POST") {
 				await handleSubmitScore(parsedBody as SubmitScoreRequest, response);
+				return;
+			}
+
+			if (routePath === "/metrics" && request.method === "GET") {
+				response.setHeader("Content-Type", "text/plain; version=0.0.4");
+				response.end(await getMetrics());
 				return;
 			}
 
@@ -1026,16 +1048,24 @@ export function startApiServer(port = resolveBackendPort()) {
 			}
 
 			if (routePath === "/health") {
-				sendJson(response, 200, { ok: true });
+				sendJson(response, 200, { ok: true, timestamp: new Date().toISOString() });
 				return;
 			}
 
 			sendJson(response, 404, { error: "Not found." });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Server error";
+			dispatchAlert({
+				severity: "critical",
+				category: "rpc_error",
+				title: "API Unhandled Server Error",
+				message,
+				metadata: { routePath },
+			});
 			sendJson(response, 500, { error: message });
 		}
 	});
+});
 
 	server.listen(port, () => {
 		console.log(`Backend API listening on http://127.0.0.1:${port}`);

@@ -21,6 +21,12 @@ import {
 	getUserFeaturesAndSignature,
 	type UserFeaturesResult,
 } from "./index.ts";
+import {
+	dispatchAlert,
+	logger,
+	zkProofDurationSeconds,
+	zkProofFailuresTotal,
+} from "./telemetry/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1054,9 +1060,11 @@ export async function generateProof(
 	console.log(fs.readFileSync(proverTomlPath, "utf8"));
 	console.log("--- [prover] END DEBUG ---");
 
-	console.log(
+	logger.info(
+		{ circuitName, userAddress: inputs.metadata?.userAddress },
 		`[prover] Generating real proof for ${circuitName} using nargo execute + bb prove...`,
 	);
+	const startTime = process.hrtime();
 	try {
 		const execOptions = {
 			cwd: circuitDir,
@@ -1082,9 +1090,26 @@ export async function generateProof(
 			`"${bbBin}" verify -p ./target/proof/proof -k ./target/generated_vk/vk -i ./target/proof/public_inputs -t evm`,
 			execOptions,
 		);
+
+		const diff = process.hrtime(startTime);
+		const durationSeconds = diff[0] + diff[1] / 1e9;
+		zkProofDurationSeconds.observe({ circuit_name: circuitName, status: "success" }, durationSeconds);
 	} catch (error) {
-		console.error(`[prover] Real proof generation failed:`, error);
-		// Cleanup temp files
+		const diff = process.hrtime(startTime);
+		const durationSeconds = diff[0] + diff[1] / 1e9;
+		zkProofDurationSeconds.observe({ circuit_name: circuitName, status: "failure" }, durationSeconds);
+		zkProofFailuresTotal.inc({ circuit_name: circuitName, error_type: "prove_error" });
+
+		const errorMessage = error instanceof Error ? error.message : String(error);
+		logger.error({ circuitName, error }, `[prover] Real proof generation failed`);
+		dispatchAlert({
+			severity: "critical",
+			category: "zk_prover",
+			title: "ZK Proof Generation Failed",
+			message: `Proof generation failed for circuit ${circuitName}: ${errorMessage}`,
+			metadata: { circuitName, userAddress: inputs.metadata?.userAddress },
+		});
+
 		try {
 			fs.rmSync(tempCircuitDir, { recursive: true, force: true });
 		} catch {}

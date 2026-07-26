@@ -37,6 +37,7 @@ find_error.js
 .vscode
 docs
 packages/backend/.instructions.md
+packages/backend/logs/
 anvil-logs.txt
 api-logs.txt
 .gemini
