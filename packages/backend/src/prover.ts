@@ -48,7 +48,8 @@ export type LoanProofInputs = {
 	account_storage_root_offset: number;
 	account_storage_root_len: number;
 	account_steps: number;
-	account_key: number[];
+	user_address: number[];
+	nonce: number;
 	storage_nodes: number[][];
 	storage_lens: number[];
 	storage_node_types: number[];
@@ -110,20 +111,9 @@ const COMBINED_GENERATED_VK_PATH = path.resolve(
 
 export function regenerateCombinedVerifierArtifacts() {
 	console.log("Generating Proving/Verification Keys only...");
-	execFileSync(
-		"npx",
-		[
-			"@aztec/bb.js@4.1.3",
-			"write_vk",
-			"-t",
-			"evm",
-			"-b",
-			COMBINED_CIRCUIT_JSON_PATH,
-			"-o",
-			COMBINED_GENERATED_VK_DIR,
-			"-s",
-			"ultra_honk",
-		],
+	const bbBin = process.env.BB_BIN || "bb";
+	execSync(
+		`"${bbBin}" write_vk -t evm -b ${COMBINED_CIRCUIT_JSON_PATH} -o ${COMBINED_GENERATED_VK_DIR} -s ultra_honk`,
 		{
 			cwd: COMBINED_CIRCUIT_DIR,
 			stdio: "inherit",
@@ -153,18 +143,31 @@ async function computePublicCommitment(
 	stateRoot: Hex,
 	isSolvent: boolean,
 	score: number,
+	userAddress: string,
+	nonce: number,
 ): Promise<Hex> {
-	const bbModule = await import("@aztec/bb.js");
-	const syncApi = await (bbModule as any).BarretenbergSync.initSingleton();
-	const response = await syncApi.pedersenHash({
-		inputs: [
-			Buffer.from(hexToBytes(stateRoot)),
-			toFieldBuffer(isSolvent ? 1n : 0n),
-			toFieldBuffer(BigInt(score)),
-		],
-		hashIndex: 0,
-	});
-	return bytesToHexLocal(response.hash as Uint8Array);
+	const userBytes = hexToBytes(getAddress(userAddress));
+	const stateRootBytes = hexToBytes(stateRoot);
+
+	const packed = new Uint8Array(61);
+	packed.set(stateRootBytes, 0);
+	packed[32] = isSolvent ? 1 : 0;
+	packed[33] = (score >> 24) & 0xff;
+	packed[34] = (score >> 16) & 0xff;
+	packed[35] = (score >> 8) & 0xff;
+	packed[36] = score & 0xff;
+	packed.set(userBytes, 37);
+	packed[57] = (nonce >> 24) & 0xff;
+	packed[58] = (nonce >> 16) & 0xff;
+	packed[59] = (nonce >> 8) & 0xff;
+	packed[60] = nonce & 0xff;
+
+	const hash = keccak256(packed);
+	const hashBytes = hexToBytes(hash);
+	
+	const truncatedHash = new Uint8Array(32);
+	truncatedHash.set(hashBytes.slice(0, 31), 1);
+	return bytesToHexLocal(truncatedHash);
 }
 
 function isZeroRoot(root: Hex | undefined | null) {
@@ -410,16 +413,248 @@ function orderProofNodesKeyless(
 	rootHash: Hex,
 	key?: Uint8Array,
 ) {
+	const remaining = nodesHex.map((node) =>
+		typeof node === "string" ? hexToBytes(node as Hex) : node,
+	);
+	const ordered: Uint8Array[] = [];
+	const childOffsets: number[] = [];
+	const childLens: number[] = [];
+	const pathOffsets: number[] = [];
+	const pathLens: number[] = [];
+	const branchIndices: number[] = [];
+	const nodeLens: number[] = [];
+	const nodeTypes: number[] = [];
+	const pathNibbles: number[] = [];
+	let keyOffset = 0;
+	const rootIndex = findRootNodeIndex(remaining, rootHash);
+
+	if (rootIndex < 0) {
+		return {
+			ordered: [new Uint8Array(532)],
+			childOffsets: [0],
+			childLens: [0],
+			pathOffsets: [0],
+			pathLens: [0],
+			branchIndices: [0],
+			nodeLens: [0],
+			nodeTypes: [0],
+			trieKey: new Uint8Array(32),
+			leafValue: new Uint8Array(32),
+		};
+	}
+
+	let currentNode = remaining.splice(rootIndex, 1)[0]!;
+
+	for (let step = 0; step < STATIC_PATH_NODE_LIMIT; step++) {
+		ordered.push(currentNode);
+		nodeLens.push(currentNode.length);
+
+		const node = decodeRlpItem(currentNode, 0);
+		const [, firstItem] = listItemAt(currentNode, node.payloadOffset, 0);
+		const [secondItemOffset, secondItem] = listItemAt(
+			currentNode,
+			node.payloadOffset,
+			1,
+		);
+
+		if (secondItemOffset + secondItem.totalLen === node.totalLen) {
+			nodeTypes.push(1);
+			pathOffsets.push(firstItem.payloadOffset);
+			pathLens.push(firstItem.payloadLen);
+			childOffsets.push(secondItem.payloadOffset);
+			childLens.push(secondItem.payloadLen);
+			branchIndices.push(0);
+
+			const compactNibbles = compactPathToNibblesLocal(
+				currentNode,
+				firstItem.payloadOffset,
+				firstItem.payloadLen,
+			);
+			pathNibbles.push(...compactNibbles);
+			const prefix = currentNode[firstItem.payloadOffset]! >> 4;
+			const isLeaf = prefix >= 2;
+			const consumed =
+				prefix % 2 === 1
+					? firstItem.payloadLen * 2 - 1
+					: firstItem.payloadLen * 2 - 2;
+			keyOffset += consumed;
+
+			if (isLeaf) {
+				return {
+					ordered,
+					childOffsets,
+					childLens,
+					pathOffsets,
+					pathLens,
+					branchIndices,
+					nodeLens,
+					nodeTypes,
+					trieKey: safeTrieKeyFromNibblesLocal(pathNibbles),
+					leafValue: currentNode.slice(
+						secondItem.payloadOffset,
+						secondItem.payloadOffset + secondItem.payloadLen,
+					),
+				};
+			}
+
+			const reference = currentNode.slice(
+				secondItem.payloadOffset,
+				secondItem.payloadOffset + secondItem.payloadLen,
+			);
+			const nextIndex = remaining.findIndex((candidate) =>
+				nodeMatchesReference(candidate, reference),
+			);
+
+			if (nextIndex < 0) {
+				if (reference.length > 0 && reference.length < 32) {
+					currentNode = reference;
+					continue;
+				}
+
+				return {
+					ordered,
+					childOffsets,
+					childLens,
+					pathOffsets,
+					pathLens,
+					branchIndices,
+					nodeLens,
+					nodeTypes,
+					trieKey: safeTrieKeyFromNibblesLocal(pathNibbles),
+					leafValue: currentNode.slice(
+						secondItem.payloadOffset,
+						secondItem.payloadOffset + secondItem.payloadLen,
+					),
+				};
+			}
+
+			currentNode = remaining.splice(nextIndex, 1)[0]!;
+			continue;
+		}
+
+		nodeTypes.push(0);
+		pathOffsets.push(0);
+		pathLens.push(0);
+
+		let nextIndex = -1;
+		let branchIndex = -1;
+
+		if (key && keyOffset < 64) {
+			const kIndex = keyNibbleAt(key, keyOffset);
+			const [, kChildItem] = listItemAt(
+				currentNode,
+				node.payloadOffset,
+				kIndex,
+			);
+			if (kChildItem.payloadLen > 0) {
+				const reference = currentNode.slice(
+					kChildItem.payloadOffset,
+					kChildItem.payloadOffset + kChildItem.payloadLen,
+				);
+				const candidateIndex = remaining.findIndex((candidate) =>
+					nodeMatchesReference(candidate, reference),
+				);
+				if (candidateIndex >= 0) {
+					nextIndex = candidateIndex;
+					branchIndex = kIndex;
+				} else if (reference.length > 0 && reference.length < 32) {
+					branchIndex = kIndex;
+				}
+			}
+		}
+
+		if (branchIndex < 0) {
+			for (let index = 0; index < 16; index++) {
+				const [, childItem] = listItemAt(
+					currentNode,
+					node.payloadOffset,
+					index,
+				);
+				if (childItem.payloadLen === 0) continue;
+
+				const reference = currentNode.slice(
+					childItem.payloadOffset,
+					childItem.payloadOffset + childItem.payloadLen,
+				);
+				const candidateIndex = remaining.findIndex((candidate) =>
+					nodeMatchesReference(candidate, reference),
+				);
+				if (candidateIndex >= 0) {
+					nextIndex = candidateIndex;
+					branchIndex = index;
+					break;
+				} else if (reference.length > 0 && reference.length < 32) {
+					branchIndex = index;
+					break;
+				}
+			}
+		}
+
+		if (
+			branchIndex < 0 ||
+			(nextIndex < 0 &&
+				currentNode.slice(
+					listItemAt(currentNode, node.payloadOffset, branchIndex)[1]
+						.payloadOffset,
+					listItemAt(currentNode, node.payloadOffset, branchIndex)[1]
+						.payloadOffset +
+						listItemAt(currentNode, node.payloadOffset, branchIndex)[1]
+							.payloadLen,
+				).length >= 32)
+		) {
+			const [, terminalItem] = listItemAt(currentNode, node.payloadOffset, 16);
+			childOffsets.push(terminalItem.payloadOffset);
+			childLens.push(terminalItem.payloadLen);
+			branchIndices.push(16);
+
+			return {
+				ordered,
+				childOffsets,
+				childLens,
+				pathOffsets,
+				pathLens,
+				branchIndices,
+				nodeLens,
+				nodeTypes,
+				trieKey: safeTrieKeyFromNibblesLocal(pathNibbles),
+				leafValue: currentNode.slice(
+					terminalItem.payloadOffset,
+					terminalItem.payloadOffset + terminalItem.payloadLen,
+				),
+			};
+		}
+
+		const [, resolvedChildItem] = listItemAt(
+			currentNode,
+			node.payloadOffset,
+			branchIndex,
+		);
+		childOffsets.push(resolvedChildItem.payloadOffset);
+		childLens.push(resolvedChildItem.payloadLen);
+		branchIndices.push(branchIndex);
+		pathNibbles.push(branchIndex);
+		keyOffset += 1;
+
+		if (nextIndex >= 0) {
+			currentNode = remaining.splice(nextIndex, 1)[0]!;
+		} else {
+			currentNode = currentNode.slice(
+				resolvedChildItem.payloadOffset,
+				resolvedChildItem.payloadOffset + resolvedChildItem.payloadLen,
+			);
+		}
+	}
+
 	return {
-		ordered: [new Uint8Array(532)],
-		childOffsets: [0],
-		childLens: [0],
-		pathOffsets: [0],
-		pathLens: [0],
-		branchIndices: [0],
-		nodeLens: [0],
-		nodeTypes: [0],
-		trieKey: new Uint8Array(32),
+		ordered,
+		childOffsets,
+		childLens,
+		pathOffsets,
+		pathLens,
+		branchIndices,
+		nodeLens,
+		nodeTypes,
+		trieKey: safeTrieKeyFromNibblesLocal(pathNibbles),
 		leafValue: new Uint8Array(32),
 	};
 }
@@ -697,6 +932,8 @@ export async function buildLoanProofInputs(
 		stateRoot as Hex,
 		isSolvent,
 		predictedScore,
+		validatedUserAddress,
+		params.nonce,
 	);
 	const repaymentRate = Number(predictedScore) * 10000;
 
@@ -724,7 +961,8 @@ export async function buildLoanProofInputs(
 		account_storage_root_offset: absoluteStorageRootOffset,
 		account_storage_root_len: accountLeafFields.storageRootLen,
 		account_steps: accountHints.ordered.length,
-		account_key: expandToNibbles(hexToBytes(accountTrieKey)),
+		user_address: Array.from(hexToBytes(validatedUserAddress)),
+		nonce: params.nonce,
 		storage_nodes: packStaticPathNodes(storageHints.ordered),
 		storage_lens: packHints(storageHints.nodeLens),
 		storage_node_types: packHints(storageHints.nodeTypes),
@@ -797,10 +1035,14 @@ export async function generateProof(
 	inputs: LoanProofInputs,
 ): Promise<GeneratedProof> {
 	const workspaceRoot = path.resolve(__dirname, "..", "..", "..");
-	const circuitDir = path.resolve(
-		workspaceRoot,
-		`packages/circuit/${circuitName}`,
-	);
+	
+	const jobId = Math.random().toString(36).substring(7);
+	const tempCircuitDir = `/tmp/circuit_${jobId}`;
+	
+	console.log(`[prover] Cloning circuit files to ${tempCircuitDir} (Job ID: ${jobId})`);
+	fs.cpSync(path.resolve(workspaceRoot, "packages/circuit"), tempCircuitDir, { recursive: true });
+
+	const circuitDir = path.resolve(tempCircuitDir, circuitName);
 	const proverTomlPath = path.resolve(circuitDir, "Prover.toml");
 
 	// Write scoreInputs to Prover.toml as requested
@@ -816,37 +1058,54 @@ export async function generateProof(
 		`[prover] Generating real proof for ${circuitName} using nargo execute + bb prove...`,
 	);
 	try {
-		// Directly use the sequence: nargo execute witness followed by bb prove
 		const execOptions = {
 			cwd: circuitDir,
 			stdio: "inherit" as const,
-			env: { ...process.env, HARDWARE_CONCURRENCY: "1" },
+			env: {
+				...process.env,
+				HARDWARE_CONCURRENCY: process.env.HARDWARE_CONCURRENCY || "2",
+				RAYON_NUM_THREADS: process.env.RAYON_NUM_THREADS || "2",
+				OMP_NUM_THREADS: process.env.OMP_NUM_THREADS || "2",
+			},
 		};
+		const bbBin = process.env.BB_BIN || "bb";
 		execSync("nargo execute witness", { cwd: circuitDir, stdio: "inherit" });
 		execSync(
-			"npx @aztec/bb.js@4.1.3 write_vk -b ./target/combined.json -o ./target/vk -s ultra_honk",
+			`"${bbBin}" write_vk -b ./target/combined.json -t evm -o ./target/vk`,
 			execOptions,
 		);
 		execSync(
-			"npx @aztec/bb.js@4.1.3 prove --slow_low_memory -b ./target/combined.json -w ./target/witness.gz -o ./target/proof -s ultra_honk",
+			`"${bbBin}" prove -b ./target/combined.json -w ./target/witness.gz -t evm -k ./target/generated_vk/vk -o ./target/proof`,
 			execOptions,
 		);
 		execSync(
-			"npx @aztec/bb.js@4.1.3 verify -p ./target/proof -k ./target/vk/vk -s ultra_honk",
+			`"${bbBin}" verify -p ./target/proof/proof -k ./target/generated_vk/vk -i ./target/proof/public_inputs -t evm`,
 			execOptions,
 		);
 	} catch (error) {
 		console.error(`[prover] Real proof generation failed:`, error);
+		// Cleanup temp files
+		try {
+			fs.rmSync(tempCircuitDir, { recursive: true, force: true });
+		} catch {}
 		throw new Error(`Failed to generate real proof for ${circuitName}`);
 	}
 
-	// Read the resulting proof from packages/circuit/target/proof as requested
-	const proofPath = path.resolve(circuitDir, "target", "proof");
+	// Read the resulting proof from packages/circuit/target/proof/proof as requested
+	const proofPath = path.resolve(circuitDir, "target", "proof", "proof");
 	if (!fs.existsSync(proofPath)) {
+		try {
+			fs.rmSync(tempCircuitDir, { recursive: true, force: true });
+		} catch {}
 		throw new Error(`Proof file not found at ${proofPath}`);
 	}
 	const proofBytes = fs.readFileSync(proofPath);
 	const proofHex = `0x${proofBytes.toString("hex")}` as Hex;
+
+	// Cleanup temp files
+	try {
+		fs.rmSync(tempCircuitDir, { recursive: true, force: true });
+	} catch {}
 
 	// Real public input is required for registry registration
 	const publicInputs = [inputs.public_commitment];

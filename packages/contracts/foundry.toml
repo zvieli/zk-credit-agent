@@ -7,13 +7,13 @@ optimizer = true
 optimizer_runs = 1
 fs_permissions = [{ access = "read", path = "./test/data" }, { access = "read", path = "./out" }]
 
-eth_rpc_url = "https://eth-mainnet.g.alchemy.com/v2/C71xjjRnVc5bmInmm-AQ3"
+eth_rpc_url = "https://eth.drpc.org"
 
 [profile.default.optimizer_details]
 yul = true
 yulDetails = { stackAllocation = true, optimizerSteps = "dhfoDgvulfnTUtnIf" }
 
 [rpc_endpoints]
-mainnet = "https://eth-mainnet.g.alchemy.com/v2/C71xjjRnVc5bmInmm-AQ3"
+mainnet = "https://eth.drpc.org"
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

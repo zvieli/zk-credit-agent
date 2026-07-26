@@ -37,7 +37,8 @@ async function main() {
 	}
 
 	const rpcUrl = process.env.RPC_URL || "http://127.0.0.1:8545";
-	const mainnetRpcUrl = "https://eth-mainnet.g.alchemy.com/v2/q8TNbtfn1iWfAXRmcdoWp"; // Fallback to the alchemy URL used in docker-compose
+	const mainnetRpcUrl =
+		process.env.MAINNET_RPC_URL || "https://eth.drpc.org";
 
 	// 2. Fetch the stateRoot from Mainnet
 	console.log(`Fetching state root for block ${TARGET_BLOCK_NUMBER} from mainnet...`);

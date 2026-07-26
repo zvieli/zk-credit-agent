@@ -117,7 +117,7 @@ contract ZK_Debug is Test {
         vm.deal(agent, 0.5 ether);
         // Axiom callback must come from mockAxiom address
         vm.prank(address(mockAxiom), agent); 
-        relayer.axiomV2Callback(uint64(fixture.chainId), fixture.user, bytes32(0), results, abi.encode(fixture.user, fixture.blockNumber, uint256(0)));
+        relayer.axiomV2Callback(uint64(fixture.chainId), fixture.user, bytes32(0), uint256(1), results, abi.encode(fixture.user, fixture.blockNumber, uint256(0)));
 
         assertEq(relayer.verifiedRoots(fixture.blockNumber), fixture.stateRoot, "state root should be recorded");
         assertTrue(agent.balance > 0.5 ether, "agent should be refunded for callback gas + fee");

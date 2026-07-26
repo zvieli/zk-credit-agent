@@ -87,11 +87,7 @@ fn main(
 
     // 3. MPT verification steps
     let AAVE_POOL_ADDR = [135, 135, 11, 202, 63, 63, 214, 51, 92, 63, 76, 232, 57, 45, 105, 53, 11, 79, 164, 226]; // 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2
-    let mut account_key_bytes = [0; 32];
-    for i in 0..20 {
-        account_key_bytes[12 + i] = AAVE_POOL_ADDR[i];
-    }
-    let account_trie_key = keccak256(account_key_bytes, 32);
+    let account_trie_key = keccak256(AAVE_POOL_ADDR, 20);
     let mut account_key_nibbles = [0; 64];
     for i in 0..32 {
         account_key_nibbles[i * 2] = account_trie_key[i] >> 4;

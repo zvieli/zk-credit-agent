@@ -14,7 +14,8 @@ import { mainnet } from "viem/chains";
 import { startAxiomRelayer } from "./axiom_relayer.ts";
 import {
 	readVerifiedRoot,
-	requestAxiomRoot,
+	prepareAxiomRequestArgs,
+	relayAxiomRequest,
 	resolveCreditPolicyAddress,
 } from "./axiom_service.ts";
 import { initBackendEnv, readFrontendDeploymentConfig } from "./env.ts";
@@ -76,13 +77,54 @@ async function validateUser(userAddress: string, stableBlock: bigint) {
 	const nonce = Math.floor(Date.now() / 1000) >>> 0;
 	const localAnvil = getLocalAnvilChain();
 
+	const account = privateKeyToAccount(ANVIL_PK);
+	const client = createPublicClient({
+		chain: localAnvil,
+		transport: http(ANVIL_RPC),
+	});
+	const wallet = createWalletClient({
+		account,
+		chain: localAnvil,
+		transport: http(ANVIL_RPC),
+	});
+
 	// 1. Request Axiom root if not verified
 	let verified = await readVerifiedRoot({ blockNumber: stableBlock });
 	if (!verified) {
-		console.log(`[step 1] Requesting Axiom root for block ${stableBlock}...`);
-		await requestAxiomRoot({
+		console.log(`[step 1] Depositing escrow for ${userAddress}...`);
+		const verifierAbi = [
+			{
+				name: "deposit",
+				type: "function",
+				stateMutability: "payable",
+				inputs: [
+					{ name: "user", type: "address" },
+					{ name: "blockNumber", type: "uint256" },
+				],
+				outputs: [],
+			},
+		] as const;
+		const depositHash = await wallet.writeContract({
+			address: getAddress(deployment.creditVerifierAddress!),
+			abi: verifierAbi,
+			functionName: "deposit",
+			args: [getAddress(userAddress), stableBlock],
+			value: 100000000000000000n, // 0.1 ETH
+		});
+		await client.waitForTransactionReceipt({ hash: depositHash });
+
+		console.log(`[step 1] Preparing request arguments...`);
+		const requestArgs = await prepareAxiomRequestArgs({
 			userAddress,
 			blockNumber: stableBlock,
+		});
+
+		console.log(`[step 1] Requesting Axiom root for block ${stableBlock}...`);
+		await relayAxiomRequest({
+			...requestArgs,
+			userAddress,
+			creditVerifierAddress: deployment.creditVerifierAddress!,
+			value: (BigInt(requestArgs.value) + 70000000000000000n).toString(),
 		});
 
 		console.log(`[step 1] Waiting for relayer to process...`);
@@ -112,14 +154,6 @@ async function validateUser(userAddress: string, stableBlock: bigint) {
 		},
 	});
 
-	const workspaceRoot = path.resolve(__dirname, "..", "..", "..");
-	const combinedTomlPath = path.resolve(
-		workspaceRoot,
-		"packages/circuit/combined/Prover.toml",
-	);
-	writeLoanProofToml(combinedTomlPath, toLoanProofWitnessInputs(inputs));
-	console.log(`[step 2] Inputs ready, Prover.toml written.`);
-
 	// 3. Generate Proof
 	console.log(`[step 3] Generating ZK proof...`);
 	const proofResult = await generateProof("combined", inputs);
@@ -127,17 +161,6 @@ async function validateUser(userAddress: string, stableBlock: bigint) {
 
 	// 4. Submit on-chain
 	console.log(`[step 4] Submitting proof to CreditPolicy...`);
-	const account = privateKeyToAccount(ANVIL_PK);
-	const client = createPublicClient({
-		chain: localAnvil,
-		transport: http(ANVIL_RPC),
-	});
-	const wallet = createWalletClient({
-		account,
-		chain: localAnvil,
-		transport: http(ANVIL_RPC),
-	});
-
 	const proofHash = keccak256(proofResult.proof);
 	const commitment = proofResult.publicInputs[0] as Hex;
 

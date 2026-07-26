@@ -1,6 +1,29 @@
-FROM node:20-slim
+FROM ubuntu:24.04
 
-RUN apt-get update && apt-get install -y curl bash libc6 libstdc++6 python3 make g++ git libc++1 libc++abi1 jq
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install essential dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    gnupg \
+    bash \
+    libc6 \
+    libstdc++6 \
+    python3 \
+    make \
+    g++ \
+    git \
+    libc++1 \
+    libc++abi1 \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 20 via Nodesource
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install nargo (Noir)
 RUN mkdir -p /root/.nargo/bin
@@ -8,11 +31,17 @@ RUN curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | ba
 ENV PATH="/root/.nargo/bin:$PATH"
 RUN /root/.nargo/bin/noirup -v 1.0.0-beta.19
 
-# Install bb (Barretenberg)
-RUN mkdir -p /root/.bb
-RUN curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/master/barretenberg/cpp/installation/install | bash || true
+# Install bb (Barretenberg) v4.0.0-nightly.20260120
+# This is the exact version matching nargo 1.0.0-beta.19 per the official bb-versions.json mapping:
+# https://raw.githubusercontent.com/AztecProtocol/aztec-packages/next/barretenberg/bbup/bb-versions.json
+RUN mkdir -p /root/.bb \
+    && curl -sL --fail \
+       https://github.com/AztecProtocol/aztec-packages/releases/download/v4.0.0-nightly.20260120/barretenberg-amd64-linux.tar.gz \
+       -o /tmp/bb.tar.gz \
+    && tar xzf /tmp/bb.tar.gz -C /root/.bb \
+    && rm /tmp/bb.tar.gz \
+    && chmod +x /root/.bb/bb
 ENV PATH="/root/.bb:$PATH"
-RUN /root/.bb/bbup -v 0.47.1
 ENV BB_BIN="/root/.bb/bb"
 
 # Install Foundry (forge, cast)

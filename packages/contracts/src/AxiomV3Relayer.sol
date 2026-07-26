@@ -105,12 +105,22 @@ contract AxiomV3Relayer is AxiomV2Client {
         emit QueryRequested(queryId, user, blockNumber);
     }
 
+    function _validateAxiomV2Call(
+        AxiomCallbackType,
+        uint64,
+        address,
+        bytes32,
+        uint256,
+        bytes calldata
+    ) internal virtual override {}
+
     function _axiomV2Callback(
         uint64,
         address,
         bytes32,
-        bytes32[] memory results,
-        bytes memory extraData
+        uint256,
+        bytes32[] calldata results,
+        bytes calldata extraData
     ) internal override {
         uint256 startGas = gasleft();
         require(results.length > 0, "missing Axiom results");

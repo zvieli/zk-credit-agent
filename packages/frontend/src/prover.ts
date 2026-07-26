@@ -30,7 +30,8 @@ export type LoanProofInputs = {
 	account_storage_root_offset: number;
 	account_storage_root_len: number;
 	account_steps: number;
-	account_key: number[];
+	user_address: number[];
+	nonce: number;
 	storage_nodes: number[][];
 	storage_lens: number[];
 	storage_node_types: number[];
@@ -261,19 +262,31 @@ async function computePublicCommitment(
 	stateRoot: Hex,
 	isSolvent: boolean,
 	score: number,
+	userAddress: string,
+	nonce: number,
 ): Promise<Hex> {
-	return postProofWorkerMessage<Hex>(
-		{
-			id: crypto.randomUUID(),
-			type: "compute-public-commitment",
-			inputs: [
-				hexToBytes(stateRoot),
-				toFieldBuffer(isSolvent ? 1n : 0n),
-				toFieldBuffer(BigInt(score)),
-			],
-		},
-		900000,
-	);
+	const userBytes = hexToBytes(getAddress(userAddress));
+	const stateRootBytes = hexToBytes(stateRoot);
+
+	const packed = new Uint8Array(61);
+	packed.set(stateRootBytes, 0);
+	packed[32] = isSolvent ? 1 : 0;
+	packed[33] = (score >> 24) & 0xff;
+	packed[34] = (score >> 16) & 0xff;
+	packed[35] = (score >> 8) & 0xff;
+	packed[36] = score & 0xff;
+	packed.set(userBytes, 37);
+	packed[57] = (nonce >> 24) & 0xff;
+	packed[58] = (nonce >> 16) & 0xff;
+	packed[59] = (nonce >> 8) & 0xff;
+	packed[60] = nonce & 0xff;
+
+	const hash = keccak256(packed);
+	const hashBytes = hexToBytes(hash);
+	
+	const truncatedHash = new Uint8Array(32);
+	truncatedHash.set(hashBytes.slice(0, 31), 1);
+	return bytesToHex(truncatedHash);
 }
 
 function flattenStorageProof(storageProof: BackendProofData["storageProof"]) {
@@ -1606,11 +1619,15 @@ export async function buildLoanProofInputs(
 		inferredStateRoot,
 		proofIsSolvent,
 		score,
+		validatedUserAddress,
+		params.nonce,
 	);
 	const expectedPublicCommitment = await computePublicCommitment(
 		inferredStateRoot,
 		proofIsSolvent,
 		score,
+		validatedUserAddress,
+		params.nonce,
 	);
 
 	if (
@@ -1638,7 +1655,8 @@ export async function buildLoanProofInputs(
 		account_storage_root_offset: accountStorageRootOffset,
 		account_storage_root_len: accountStorageRootLen,
 		account_steps: accountRealSteps,
-		account_key: accountTrieKeyNibbles,
+		user_address: Array.from(hexToBytes(validatedUserAddress)),
+		nonce: params.nonce,
 		storage_nodes: storageNodes,
 		storage_lens: storageNodeLens,
 		storage_node_types: storageNodeTypes,

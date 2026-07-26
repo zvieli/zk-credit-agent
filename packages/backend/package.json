@@ -5,14 +5,14 @@
 	"main": "index.js",
 	"scripts": {
 		"test": "echo \"Error: no test specified\" && exit 1",
-		"api": "npx ts-node --esm src/api.ts",
-		"worker": "npx ts-node --esm src/worker.ts",
+		"api": "npx tsx src/api.ts",
+		"worker": "npx tsx src/worker.ts",
 		"build": "tsc",
 
-		"axiom:relayer": "npx ts-node --esm src/axiom_relayer.ts",
-		"deploy": "npx ts-node --esm src/deploy.ts",
-		"seed:block": "npx ts-node --esm src/seed_block.ts",
-		"fuzz:solvency": "npx ts-node --esm src/fuzz-solvency.ts"
+		"axiom:relayer": "npx tsx src/axiom_relayer.ts",
+		"deploy": "npx tsx src/deploy.ts",
+		"seed:block": "npx tsx src/seed_block.ts",
+		"fuzz:solvency": "npx tsx src/fuzz-solvency.ts"
 	},
 	"keywords": [],
 	"author": "",

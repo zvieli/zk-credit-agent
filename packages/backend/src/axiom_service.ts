@@ -267,8 +267,15 @@ function sleep(ms: number) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function encodeAxiomStateRootCallbackData(blockNumber: bigint) {
-	return encodeAbiParameters(parseAbiParameters("uint256"), [blockNumber]);
+export function encodeAxiomStateRootCallbackData(
+	blockNumber: bigint,
+	user = "0x0000000000000000000000000000000000000000",
+	nonce = 0,
+) {
+	return encodeAbiParameters(
+		parseAbiParameters("address, uint256, uint256"),
+		[getAddress(user), blockNumber, BigInt(nonce)],
+	);
 }
 
 export function buildHeaderStateRootQuery(blockNumber: bigint) {
@@ -370,7 +377,7 @@ export async function requestAxiomRoot(
 		},
 		callback: {
 			target: creditPolicyAddress,
-			extraData: encodeAxiomStateRootCallbackData(params.blockNumber),
+			extraData: encodeAxiomStateRootCallbackData(params.blockNumber, validatedUserAddress),
 		},
 		caller: account.address,
 		mock: false,
@@ -507,7 +514,7 @@ export async function prepareAxiomRequestArgs(params: RequestAxiomRootParams) {
 		},
 		callback: {
 			target: creditPolicyAddress,
-			extraData: encodeAxiomStateRootCallbackData(params.blockNumber),
+			extraData: encodeAxiomStateRootCallbackData(params.blockNumber, params.userAddress),
 		},
 		caller: creditPolicyAddress, // The Relayer contract will be the caller
 		mock: false,

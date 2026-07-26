@@ -303,7 +303,7 @@ async function main() {
 		process.env.anvil_RPC_URL ||
 		(process.env.ALCHEMY_API_KEY
 			? `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`
-			: rpcUrl);
+			: "https://eth.drpc.org");
 	const transport = http(rpcUrl, {
 		timeout: 300000,
 	});
@@ -318,7 +318,10 @@ async function main() {
 		id: 31337,
 	};
 	const chain =
-		rpcUrl.includes("127.0.0.1") || rpcUrl.includes("localhost")
+		rpcUrl.includes("127.0.0.1") ||
+		rpcUrl.includes("localhost") ||
+		rpcUrl.includes("anvil") ||
+		rpcUrl.includes("8545")
 			? anvil
 			: mainnet;
 
