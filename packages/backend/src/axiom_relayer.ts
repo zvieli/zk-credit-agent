@@ -219,7 +219,12 @@ export async function startAxiomRelayer(
 
 	async function pollOnce(): Promise<bigint> {
 		const latestBlock: bigint = (await publicClient.getBlockNumber()) ?? 0n;
-		const scanStart = lastScannedBlock > 0n ? lastScannedBlock - 1n : 0n;
+
+		if (lastScannedBlock === 0n || lastScannedBlock < latestBlock - 20n) {
+			lastScannedBlock = latestBlock > 20n ? latestBlock - 20n : 0n;
+		}
+
+		const scanStart = lastScannedBlock;
 
 		console.log(
 			`[relayer] Scanning for queries between blocks ${scanStart.toString()} and ${latestBlock.toString()}...`,
@@ -398,7 +403,7 @@ export async function startAxiomRelayer(
 			}
 		}
 
-		lastScannedBlock = latestBlock;
+		lastScannedBlock = latestBlock + 1n;
 		return latestBlock;
 	}
 
@@ -407,10 +412,6 @@ export async function startAxiomRelayer(
 
 		while (!stopped) {
 			try {
-				if (lastScannedBlock === 0n) {
-					lastScannedBlock = 1n;
-				}
-
 				await pollOnce();
 				loopIterations += 1;
 
