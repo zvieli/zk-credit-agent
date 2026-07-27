@@ -32,22 +32,17 @@ ENV PATH="/root/.nargo/bin:$PATH"
 RUN /root/.nargo/bin/noirup -v 1.0.0-beta.19
 
 # Install bb (Barretenberg) v4.0.0-nightly.20260120
-# This is the exact version matching nargo 1.0.0-beta.19 per the official bb-versions.json mapping:
-# https://raw.githubusercontent.com/AztecProtocol/aztec-packages/next/barretenberg/bbup/bb-versions.json
-RUN mkdir -p /root/.bb \
-    && curl -sL --fail \
-       https://github.com/AztecProtocol/aztec-packages/releases/download/v4.0.0-nightly.20260120/barretenberg-amd64-linux.tar.gz \
-       -o /tmp/bb.tar.gz \
-    && tar xzf /tmp/bb.tar.gz -C /root/.bb \
-    && rm /tmp/bb.tar.gz \
-    && chmod +x /root/.bb/bb
+RUN mkdir -p /root/.bb
+COPY bb_binary /root/.bb/bb
+RUN chmod +x /root/.bb/bb
 ENV PATH="/root/.bb:$PATH"
 ENV BB_BIN="/root/.bb/bb"
 
-# Install Foundry (forge, cast)
-RUN curl -L https://foundry.paradigm.xyz | bash || true
+# Install Foundry (forge, cast, anvil)
+RUN mkdir -p /root/.foundry/bin
+COPY foundry_bin/* /root/.foundry/bin/
+RUN chmod +x /root/.foundry/bin/*
 ENV PATH="/root/.foundry/bin:$PATH"
-RUN /root/.foundry/bin/foundryup
 
 WORKDIR /app
 
