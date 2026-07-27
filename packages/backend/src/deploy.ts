@@ -194,7 +194,7 @@ async function main() {
 		JSON.stringify(
 			{
 				chainId: chain.id,
-				rpcUrl,
+				rpcUrl: rpcUrl.replace("anvil:8545", "localhost:8545"),
 				creditPolicyAddress: relayerAddr, // Used as callback target
 				axiomV3RelayerAddress: relayerAddr,
 				creditVerifierAddress: verifierAddr,
