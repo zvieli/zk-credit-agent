@@ -1,3 +1,4 @@
+import { getAxiomV2QueryAddress } from "@axiom-crypto/client";
 import * as dotenv from "dotenv";
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
@@ -136,7 +137,8 @@ async function main() {
 	);
 	const axiomAddress = getAddress(
 		process.env.AXIOM_V2_QUERY_ADDRESS ||
-			"0x386121D50d8591873C8b8b15d666E3A3705978f8",
+			getAxiomV2QueryAddress(String(chain.id)) ||
+			"0x83c8c0B395850bA55c830451Cfaca4F2A667a983",
 	);
 	const relayerHash = await walletClient.deployContract({
 		abi: relayerArtifact.abi,
