@@ -62,10 +62,9 @@ async function main() {
 	});
 
 	// Calculate storage slot.
-	// AxiomV2Client has 1 slot (slot 0: axiomV2QueryAddress).
-	// AxiomV3Relayer starts at slot 1.
-	// `mapping(uint256 => bytes32) public verifiedRoots` is slot 1.
-	const mappingSlot = 1n;
+	// AxiomV2Client has no storage variables (axiomV2QueryAddress is immutable).
+	// `mapping(uint256 => bytes32) public verifiedRoots` is the first declaration → slot 0.
+	const mappingSlot = 0n;
 
 	const slotIndex = keccak256(
 		encodeAbiParameters(parseAbiParameters("uint256, uint256"), [

@@ -968,9 +968,13 @@ export function startApiServer(port = resolveBackendPort()) {
 		void runWithContext({ traceId, spanId: crypto.randomUUID().slice(0, 8) }, async () => {
 			try {
 				let parsedBody: unknown;
-				if (request.method === "POST" && parsedBody === undefined) {
-					sendJson(response, 400, { error: "Invalid JSON body" });
-					return;
+				if (request.method === "POST") {
+					try {
+						parsedBody = await readJsonBody(request);
+					} catch {
+						sendJson(response, 400, { error: "Invalid JSON body" });
+						return;
+					}
 				}
 
 			if (
