@@ -92,13 +92,24 @@ const creditVerifierAbi = [
 	},
 ] as const;
 
-function resolveRpcUrl() {
-	return (
+function resolveRpcUrl(explicitRpcUrl?: string) {
+	const envRpc =
 		process.env.ANVIL_RPC_URL ||
 		process.env.RPC_URL ||
-		process.env.PROOF_RPC_URL ||
-		"http://127.0.0.1:8545"
-	);
+		process.env.PROOF_RPC_URL;
+
+	if (explicitRpcUrl) {
+		if (
+			envRpc &&
+			(explicitRpcUrl.includes("localhost") ||
+				explicitRpcUrl.includes("127.0.0.1"))
+		) {
+			return envRpc;
+		}
+		return explicitRpcUrl;
+	}
+
+	return envRpc || "http://127.0.0.1:8545";
 }
 
 function resolveRemoteRpcUrl() {
@@ -139,7 +150,7 @@ export async function startAxiomRelayer(
 	config: Partial<AxiomRelayerConfig> = {},
 ) {
 	const deployment = readFrontendDeploymentConfig();
-	const rpcUrl = config.rpcUrl || resolveRpcUrl();
+	const rpcUrl = resolveRpcUrl(config.rpcUrl);
 	const chainId = mainnet.id;
 	const publicClient = createPublicClient({
 		chain: {

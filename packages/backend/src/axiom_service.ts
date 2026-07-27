@@ -166,20 +166,24 @@ function readDeploymentConfig(): DeploymentConfig {
 }
 
 function resolveTransactionRpcUrl(explicitRpcUrl?: string) {
+	const envRpc =
+		process.env.ANVIL_RPC_URL ||
+		process.env.RPC_URL ||
+		process.env.TX_RPC_URL;
+
 	if (explicitRpcUrl) {
+		if (
+			envRpc &&
+			(explicitRpcUrl.includes("localhost") ||
+				explicitRpcUrl.includes("127.0.0.1"))
+		) {
+			return envRpc;
+		}
 		return explicitRpcUrl;
 	}
 
-	if (process.env.ANVIL_RPC_URL) {
-		return process.env.ANVIL_RPC_URL;
-	}
-
-	if (process.env.RPC_URL) {
-		return process.env.RPC_URL;
-	}
-
-	if (process.env.TX_RPC_URL) {
-		return process.env.TX_RPC_URL;
+	if (envRpc) {
+		return envRpc;
 	}
 
 	const deployment = readDeploymentConfig();
@@ -191,16 +195,24 @@ function resolveTransactionRpcUrl(explicitRpcUrl?: string) {
 }
 
 function resolveProofRpcUrl(explicitRpcUrl?: string) {
+	const envRpc =
+		process.env.ANVIL_RPC_URL ||
+		process.env.PROOF_RPC_URL ||
+		process.env.RPC_URL;
+
 	if (explicitRpcUrl) {
+		if (
+			envRpc &&
+			(explicitRpcUrl.includes("localhost") ||
+				explicitRpcUrl.includes("127.0.0.1"))
+		) {
+			return envRpc;
+		}
 		return explicitRpcUrl;
 	}
 
-	if (process.env.ANVIL_RPC_URL) {
-		return process.env.ANVIL_RPC_URL;
-	}
-
-	if (process.env.PROOF_RPC_URL) {
-		return process.env.PROOF_RPC_URL;
+	if (envRpc) {
+		return envRpc;
 	}
 
 	const deployment = readDeploymentConfig();

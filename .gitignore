@@ -6,6 +6,7 @@ package-lock.json
 **/.env
 **/.env.local
 **/.env.*
+!**/.env.example
 
 # Foundry artifacts
 packages/contracts/lib/
@@ -38,7 +39,11 @@ find_error.js
 docs
 packages/backend/.instructions.md
 packages/backend/logs/
+bb_binary
+foundry_bin/
 anvil-logs.txt
 api-logs.txt
 .gemini
 .superpowers
+bb_binary
+foundry_bin

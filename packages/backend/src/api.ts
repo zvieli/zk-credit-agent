@@ -163,29 +163,44 @@ function resolveBackendPort() {
 	return Number(process.env.PORT ?? process.env.BACKEND_PORT ?? 3001);
 }
 
-function resolveProofRpcUrl() {
-	if (process.env.ANVIL_RPC_URL) {
-		return process.env.ANVIL_RPC_URL;
+function resolveProofRpcUrl(explicitRpcUrl?: string) {
+	const envRpc =
+		process.env.ANVIL_RPC_URL ||
+		process.env.PROOF_RPC_URL ||
+		process.env.RPC_URL;
+
+	if (explicitRpcUrl) {
+		if (
+			envRpc &&
+			(explicitRpcUrl.includes("localhost") ||
+				explicitRpcUrl.includes("127.0.0.1"))
+		) {
+			return envRpc;
+		}
+		return explicitRpcUrl;
 	}
 
-	if (process.env.PROOF_RPC_URL) {
-		return process.env.PROOF_RPC_URL;
-	}
-
-	if (process.env.RPC_URL) {
-		return process.env.RPC_URL;
-	}
-
-	return "http://127.0.0.1:8545";
+	return envRpc || "http://127.0.0.1:8545";
 }
 
-function resolveTransactionRpcUrl() {
-	return (
-		process.env.ANVIL_RPC_URL ??
-		process.env.RPC_URL ??
-		process.env.TX_RPC_URL ??
-		"http://127.0.0.1:8545"
-	);
+function resolveTransactionRpcUrl(explicitRpcUrl?: string) {
+	const envRpc =
+		process.env.ANVIL_RPC_URL ||
+		process.env.RPC_URL ||
+		process.env.TX_RPC_URL;
+
+	if (explicitRpcUrl) {
+		if (
+			envRpc &&
+			(explicitRpcUrl.includes("localhost") ||
+				explicitRpcUrl.includes("127.0.0.1"))
+		) {
+			return envRpc;
+		}
+		return explicitRpcUrl;
+	}
+
+	return envRpc || "http://127.0.0.1:8545";
 }
 
 function resolveRuntimeRpcChain(rpcUrl: string): Chain {
@@ -707,7 +722,7 @@ async function handleGetProofData(
 			contractAddress,
 			chainId,
 			nonce,
-			body.rpcUrl ?? resolveTransactionRpcUrl(),
+			resolveTransactionRpcUrl(body.rpcUrl),
 			overrides,
 		);
 
