@@ -55,6 +55,7 @@ const axiomCallbackAbi = [
 			{ name: "sourceChainId", type: "uint64" },
 			{ name: "caller", type: "address" },
 			{ name: "querySchema", type: "bytes32" },
+			{ name: "queryId", type: "uint256" },
 			{ name: "results", type: "bytes32[]" },
 			{ name: "extraData", type: "bytes" },
 		],
@@ -252,21 +253,28 @@ export async function startAxiomRelayer(
 
 				let userAddress: Hex;
 				let targetBlock: bigint;
+				let nonce: bigint;
 				try {
-					[userAddress, targetBlock] = decodeAbiParameters(
-						[{ type: "address" }, { type: "uint256" }],
+					[userAddress, targetBlock, nonce] = decodeAbiParameters(
+						[{ type: "address" }, { type: "uint256" }, { type: "uint256" }],
 						extraData,
 					);
 				} catch {
-					// Fallback for old extraData format if needed
 					try {
-						[targetBlock] = decodeAbiParameters(
-							[{ type: "uint256" }],
+						[userAddress, targetBlock] = decodeAbiParameters(
+							[{ type: "address" }, { type: "uint256" }],
 							extraData,
 						);
-						userAddress = account.address; // Should not happen in new flow
 					} catch {
-						continue;
+						try {
+							[targetBlock] = decodeAbiParameters(
+								[{ type: "uint256" }],
+								extraData,
+							);
+							userAddress = account.address;
+						} catch {
+							continue;
+						}
 					}
 				}
 
@@ -324,6 +332,7 @@ export async function startAxiomRelayer(
 							sourceChainId,
 							getAddress(userAddress),
 							querySchema,
+							queryId,
 							results,
 							extraData,
 						],
@@ -399,12 +408,7 @@ export async function startAxiomRelayer(
 		while (!stopped) {
 			try {
 				if (lastScannedBlock === 0n) {
-					try {
-						lastScannedBlock = await publicClient.getBlockNumber();
-					} catch {
-						await sleep(POLL_INTERVAL_MS);
-						continue;
-					}
+					lastScannedBlock = 1n;
 				}
 
 				await pollOnce();

@@ -1088,17 +1088,31 @@ export function startApiServer(port = resolveBackendPort()) {
 
 	server.listen(port, () => {
 		console.log(`Backend API listening on http://127.0.0.1:${port}`);
-		try {
-			const callbackTarget = resolveConfiguredCreditPolicyAddress();
-			void startAxiomRelayer({
-				callbackTarget,
-			}).catch((error) => {
-				console.error("[relayer] Critical failure:", error);
-			});
-		} catch (error) {
-			console.warn(
-				"[relayer] Contract not deployed yet (CREDIT_POLICY_ADDRESS missing). Relayer standing by until deployment.",
-			);
+		let relayerStarted = false;
+		const tryStartRelayer = () => {
+			if (relayerStarted) return;
+			try {
+				const callbackTarget = resolveConfiguredCreditPolicyAddress();
+				void startAxiomRelayer({
+					callbackTarget,
+				}).catch((error) => {
+					console.error("[relayer] Critical failure:", error);
+				});
+				relayerStarted = true;
+				console.log(
+					`[relayer] Started background Axiom relayer listening for callback target ${callbackTarget}`,
+				);
+			} catch {
+				// Standby until deployment config exists
+			}
+		};
+
+		tryStartRelayer();
+		if (!relayerStarted) {
+			const interval = setInterval(() => {
+				tryStartRelayer();
+				if (relayerStarted) clearInterval(interval);
+			}, 5000);
 		}
 	});
 
