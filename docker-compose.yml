@@ -92,5 +92,5 @@ services:
       - /app/packages/backend/node_modules
       - /app/packages/frontend/node_modules
     environment:
-      - VITE_BACKEND_URL=http://api:3001
+      - VITE_BACKEND_URL=http://localhost:3001
       - VITE_RPC_URL=http://localhost:8545
